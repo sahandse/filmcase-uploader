@@ -1,3 +1,9 @@
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
 /build/
 /.dart_tool/
 /.flutter-plugins

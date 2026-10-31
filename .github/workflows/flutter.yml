@@ -31,8 +31,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate Android platform files
-        run: flutter create --platforms=android --org ir.filmcase --project-name filmcase_uploader --no-pub .
+      - name: Generate Android platform files (only when missing)
+        run: |
+          if [ ! -f android/app/build.gradle.kts ]; then
+            flutter create --platforms=android --org ir.filmcase --project-name filmcase_uploader --no-pub .
+          fi
 
       - name: Install Flutter dependencies
         run: flutter pub get
