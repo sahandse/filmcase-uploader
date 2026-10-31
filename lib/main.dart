@@ -270,58 +270,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _validateConnection() async {
-    if (token.trim().isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ابتدا توکن Boxera را در تنظیمات وارد و ذخیره کن.')),
-        );
-      }
-      return;
-    }
-    if (mounted) setState(() => connectionState = 'در حال بررسی توکن...');
-    try {
-      final base = apiBase.trim().replaceAll(RegExp(r'/+$'), '');
-      final response = await http.get(
-        Uri.parse('$base/auth/me'),
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': 'Bearer ' + token.trim(),
-        },
-      ).timeout(const Duration(seconds: 25));
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final decoded = jsonDecode(response.body);
-        final root = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
-        final data = root['data'] is Map<String, dynamic>
-            ? root['data'] as Map<String, dynamic>
-            : root;
-        final user = data['user'] is Map<String, dynamic>
-            ? data['user'] as Map<String, dynamic>
-            : <String, dynamic>{};
-        final userId = user['id']?.toString();
-        if (!mounted) return;
-        setState(() => connectionState = userId == null
-            ? 'توکن معتبر است؛ حساب متصل شد'
-            : 'حساب Boxera متصل شد • شناسه ' + userId);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('اتصال Boxera با موفقیت تأیید شد.')),
-        );
-      } else {
-        if (!mounted) return;
-        setState(() => connectionState = 'اتصال ناموفق • HTTP ' + response.statusCode.toString());
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Boxera توکن را تأیید نکرد: HTTP ' + response.statusCode.toString())),
-        );
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => connectionState = 'خطا در ارتباط با Boxera');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ارتباط با Boxera برقرار نشد؛ آدرس API و اینترنت را بررسی کن.')),
-      );
-    }
-  }
-
   void _showSettings() {
     final api = TextEditingController(text: apiBase);
     final tok = TextEditingController(text: token);
@@ -427,12 +375,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _duplicateItem(UploadItem item) async {
-    if (items.any((e) => e.url == item.url)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('این لینک از قبل در فهرست وجود دارد.')));
-      return;
-    }
     setState(() => items.insert(0, UploadItem(item.url, folder: item.folder)));
     await _save();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('یک نسخه از لینک به صف اضافه شد.')),
+      );
+    }
   }
 
   Future<void> _copyLink(UploadItem item) async {
