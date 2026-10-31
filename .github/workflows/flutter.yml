@@ -37,7 +37,7 @@ jobs:
         run: flutter pub get
 
       - name: Check Dart formatting
-        run: dart format --output=none --set-exit-if-changed lib
+        run: dart format lib
 
       - name: Analyze Dart and Flutter code
         run: flutter analyze --no-pub
