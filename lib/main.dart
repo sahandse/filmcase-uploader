@@ -220,53 +220,143 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _validateConnection() async {
     if (token.trim().isEmpty) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ابتدا توکن Boxera را در تنظیمات وارد و ذخیره کن.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ابتدا توکن Boxera را در تنظیمات وارد و ذخیره کن.')),
+        );
+      }
       return;
     }
     if (mounted) setState(() => connectionState = 'در حال بررسی توکن...');
     try {
-      final base = apiBase.trim().replaceAll(RegExp(r'/+    final api = TextEditingController(text: apiBase);
+      final base = apiBase.trim().replaceAll(RegExp(r'/+$'), '');
+      final response = await http.get(
+        Uri.parse('$base/auth/me'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ' + token.trim(),
+        },
+      ).timeout(const Duration(seconds: 25));
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final decoded = jsonDecode(response.body);
+        final root = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+        final data = root['data'] is Map<String, dynamic>
+            ? root['data'] as Map<String, dynamic>
+            : root;
+        final user = data['user'] is Map<String, dynamic>
+            ? data['user'] as Map<String, dynamic>
+            : <String, dynamic>{};
+        final userId = user['id']?.toString();
+        if (!mounted) return;
+        setState(() => connectionState = userId == null
+            ? 'توکن معتبر است؛ حساب متصل شد'
+            : 'حساب Boxera متصل شد • شناسه ' + userId);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('اتصال Boxera با موفقیت تأیید شد.')),
+        );
+      } else {
+        if (!mounted) return;
+        setState(() => connectionState = 'اتصال ناموفق • HTTP ' + response.statusCode.toString());
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Boxera توکن را تأیید نکرد: HTTP ' + response.statusCode.toString())),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => connectionState = 'خطا در ارتباط با Boxera');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ارتباط با Boxera برقرار نشد؛ آدرس API و اینترنت را بررسی کن.')),
+      );
+    }
+  }
+
+  void _showSettings() {
+    final api = TextEditingController(text: apiBase);
     final tok = TextEditingController(text: token);
     var localConcurrent = maxConcurrent;
     var localUploadConcurrent = maxConcurrentUploads;
     var localBatch = maxBatch;
     var localAutoCheck = autoCheckLinks;
-    showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: panel, builder: (ctx) => StatefulBuilder(builder: (ctx, refresh) => Padding(
-      padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
-      child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-        const Text('تنظیمات اتصال و صف', style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 16),
-        TextField(controller: api, decoration: const InputDecoration(labelText: 'آدرس پایه Boxera')),
-        const SizedBox(height: 12),
-        TextField(controller: tok, obscureText: obscure, decoration: InputDecoration(labelText: 'توکن آپلود Boxera', suffixIcon: IconButton(icon: Icon(obscure ? Icons.visibility : Icons.visibility_off), onPressed: () => refresh(() => obscure = !obscure)))),
-        const SizedBox(height: 12),
-        const SizedBox(height: 14),
-        Text('حداکثر بررسی لینک هم‌زمان: $localConcurrent'),
-        Slider(value: localConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localConcurrent = v.round())),
-        Text('حداکثر آپلود هم‌زمان (پس از فعال‌شدن API): $localUploadConcurrent'),
-        Slider(value: localUploadConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localUploadConcurrent = v.round())),
-        Text('حداکثر لینک در هر دسته: $localBatch'),
-        Slider(value: localBatch.toDouble(), min: 10, max: 200, divisions: 19, onChanged: (v) => refresh(() => localBatch = v.round())),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('بررسی خودکار لینک بعد از افزودن'), value: localAutoCheck, onChanged: (v) => refresh(() => localAutoCheck = v)),
-        const SizedBox(height: 8),
-        const Text('توکن شخصی در فضای امن Android ذخیره می‌شود. این برنامه توکن را به شخص دیگری ارسال نمی‌کند. با دکمه زیر اعتبار توکن از مسیر واقعی /auth/me بررسی می‌شود.', style: TextStyle(color: Colors.white60, fontSize: 12)),
-        const SizedBox(height: 16),
-        FilledButton(onPressed: () async {
-          setState(() {
-            apiBase = api.text.trim(); token = tok.text.trim();
-            maxConcurrent = localConcurrent;
-            maxConcurrentUploads = localUploadConcurrent;
-            maxBatch = localBatch; autoCheckLinks = localAutoCheck;
-            connectionState = 'تنظیمات ذخیره شد؛ آماده بررسی اتصال';
-          });
-          await _save();
-          if (ctx.mounted) Navigator.pop(ctx);
-          await _validateConnection();
-        }, child: const Text('ذخیره و بررسی اتصال')),
-      ])),
-    )));
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: panel,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, refresh) => Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('تنظیمات اتصال و صف', style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                TextField(controller: api, decoration: const InputDecoration(labelText: 'آدرس پایه Boxera')),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: tok,
+                  obscureText: obscure,
+                  decoration: InputDecoration(
+                    labelText: 'توکن آپلود Boxera',
+                    suffixIcon: IconButton(
+                      icon: Icon(obscure ? Icons.visibility : Icons.visibility_off),
+                      onPressed: () => refresh(() => obscure = !obscure),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text('حداکثر بررسی لینک هم‌زمان: $localConcurrent'),
+                Slider(value: localConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localConcurrent = v.round())),
+                Text('حداکثر آپلود هم‌زمان: $localUploadConcurrent'),
+                Slider(value: localUploadConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localUploadConcurrent = v.round())),
+                Text('حداکثر لینک در هر دسته: $localBatch'),
+                Slider(value: localBatch.toDouble(), min: 10, max: 200, divisions: 19, onChanged: (v) => refresh(() => localBatch = v.round())),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('بررسی خودکار لینک بعد از افزودن'),
+                  value: localAutoCheck,
+                  onChanged: (v) => refresh(() => localAutoCheck = v),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'توکن شخصی در فضای امن Android ذخیره می‌شود. اعتبار آن با مسیر واقعی /auth/me بررسی می‌شود. توجه: نگهداری توکن در موبایل برخلاف توصیه امنیتی Boxera برای ذخیره توکن فقط روی سرور است.',
+                  style: TextStyle(color: Colors.white60, fontSize: 12),
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () async {
+                    setState(() {
+                      apiBase = api.text.trim();
+                      token = tok.text.trim();
+                      maxConcurrent = localConcurrent;
+                      maxConcurrentUploads = localUploadConcurrent;
+                      maxBatch = localBatch;
+                      autoCheckLinks = localAutoCheck;
+                      connectionState = 'تنظیمات ذخیره شد؛ آماده بررسی اتصال';
+                    });
+                    await _save();
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    await _validateConnection();
+                  },
+                  child: const Text('ذخیره و بررسی اتصال'),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    setState(() {
+                      token = '';
+                      connectionState = 'توکن حذف شد';
+                    });
+                    await _save();
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  },
+                  child: const Text('حذف توکن ذخیره‌شده'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _moveItem(UploadItem item) async {
