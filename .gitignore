@@ -1,0 +1,11 @@
+/build/
+/.dart_tool/
+/.flutter-plugins
+/.flutter-plugins-dependencies
+/.packages
+/pubspec.lock
+/android/local.properties
+*.jks
+*.keystore
+.env
+.env.*
