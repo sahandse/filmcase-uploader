@@ -261,11 +261,29 @@ class _HomePageState extends State<HomePage> {
           SnackBar(content: Text('Boxera توکن را تأیید نکرد: HTTP ' + response.statusCode.toString())),
         );
       }
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
-      setState(() => connectionState = 'خطا در ارتباط با Boxera');
+      final detail = error.toString();
+      String message;
+      if (detail.contains('SocketException') || detail.contains('Failed host lookup') ||
+          detail.contains('No address associated with hostname')) {
+        message = 'خطای DNS؛ دامنه Boxera از این دستگاه پیدا نشد.';
+      } else if (detail.contains('HandshakeException') ||
+          detail.contains('CERTIFICATE_VERIFY_FAILED') ||
+          detail.contains('certificate')) {
+        message = 'خطای گواهی امن SSL/TLS در ارتباط با Boxera.';
+      } else if (detail.contains('TimeoutException') || detail.contains('timed out')) {
+        message = 'مهلت اتصال به Boxera تمام شد؛ سرور پاسخ نداد.';
+      } else if (detail.contains('FormatException')) {
+        message = 'پاسخ Boxera JSON معتبر نیست؛ آدرس API یا پاسخ سرور را بررسی کن.';
+      } else if (detail.contains('ClientException')) {
+        message = 'ارتباط شبکه برقرار نشد؛ اینترنت، VPN یا دسترسی شبکه را بررسی کن.';
+      } else {
+        message = 'خطای ارتباط: ' + detail;
+      }
+      setState(() => connectionState = message);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ارتباط با Boxera برقرار نشد؛ آدرس API و اینترنت را بررسی کن.')),
+        SnackBar(content: Text(message), duration: const Duration(seconds: 7)),
       );
     }
   }
