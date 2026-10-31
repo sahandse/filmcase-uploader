@@ -1,17 +1,32 @@
-name: Flutter checks
+name: Flutter Android build
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
 jobs:
-  analyze:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - run: flutter pub get
-      - run: dart format --output=none --set-exit-if-changed lib
-      - run: flutter analyze
+      - name: Generate Android platform scaffold
+        run: flutter create --platforms=android --org ir.filmcase .
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Format Dart
+        run: dart format lib
+      - name: Analyze
+        run: flutter analyze
+      - name: Build release APK
+        run: flutter build apk --release
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: filmcase-uploader-android
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
