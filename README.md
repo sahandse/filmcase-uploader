@@ -38,3 +38,10 @@ flutter create --platforms=android --org ir.filmcase .
 flutter pub get
 flutter run
 ```
+
+پیش‌نیازهای بیلد اندروید روی سیستم شخصی:
+- JDK 17 نصب باشد و `JAVA_HOME` به همان مسیر اشاره کند (JRE 8 کافی نیست).
+- Android SDK Build-Tools 36.0.0 و NDK 28.2.13676358 (نسخه پیش‌فرض Flutter) نصب باشند.
+- اگر دسترسی به `dl.google.com` برای مخازن Maven محدود است، از میرور (مثل `maven.aliyun.com/repository/google`) در `android/settings.gradle.kts` و `android/build.gradle.kts` استفاده کنید.
+
+اگر فضای دیسک یا ابزار بیلد محلی در دسترس نیست، ساخت APK را به GitHub Actions بسپارید؛ فایل خروجی در Artifacts اجرای Workflow با نام `filmcase-uploader-android` قرار می‌گیرد.
