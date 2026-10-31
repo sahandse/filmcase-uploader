@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'connection_diagnostics_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -447,7 +448,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = [_dashboard(), _linksPage(), _historyPage()];
+    final pages = [_dashboard(), _linksPage(), _historyPage(), ConnectionDiagnosticsPage(apiBase: apiBase, token: token)];
     return Directionality(textDirection: TextDirection.rtl, child: Scaffold(
       appBar: AppBar(
         title: const Row(children: [Icon(Icons.cloud_upload, color: orange), SizedBox(width: 9), Text('Filmcase Uploader', style: TextStyle(fontWeight: FontWeight.bold))]),
@@ -461,6 +462,7 @@ class _HomePageState extends State<HomePage> {
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'خانه'),
           NavigationDestination(icon: Icon(Icons.link), label: 'لینک‌ها'),
           NavigationDestination(icon: Icon(Icons.history), label: 'صف و تاریخچه'),
+          NavigationDestination(icon: Icon(Icons.network_check), label: 'عیب‌یابی'),
         ],
       ),
     ));
@@ -490,6 +492,7 @@ class _HomePageState extends State<HomePage> {
     _action(Icons.playlist_add_check, 'بررسی حجم و سلامت لینک‌ها', _checkAll),
     _action(Icons.create_new_folder_outlined, 'ساخت پوشه', _newFolder),
     _action(Icons.settings_outlined, 'تنظیمات و توکن API', _showSettings),
+    _action(Icons.network_check, 'عیب‌یابی اتصال Boxera', () => setState(() => selectedNav = 3)),
     const SizedBox(height: 12),
     Text('حجم شناخته‌شده لینک‌ها: ${bytesText(knownTotalBytes)} • حجم ${unknownCount} لینک هنوز مشخص نیست.', style: const TextStyle(color: Colors.white54, fontSize: 12)),
   ]);
