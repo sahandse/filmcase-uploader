@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -85,6 +86,7 @@ class _HomePageState extends State<HomePage> {
   String connectionState = 'تنظیم نشده';
   int selectedNav = 0;
   int maxConcurrent = 2;
+  int maxConcurrentUploads = 2;
   int maxBatch = 50;
   int? accountQuotaBytes;
   int? accountUsedBytes;
@@ -107,6 +109,7 @@ class _HomePageState extends State<HomePage> {
       token = savedToken;
       backend = p.getString('backend') ?? '';
       maxConcurrent = p.getInt('maxConcurrent') ?? 2;
+      maxConcurrentUploads = p.getInt('maxConcurrentUploads') ?? 2;
       maxBatch = p.getInt('maxBatch') ?? 50;
       autoCheckLinks = p.getBool('autoCheckLinks') ?? true;
       folders
@@ -129,6 +132,7 @@ class _HomePageState extends State<HomePage> {
     }
     await p.setString('backend', backend);
     await p.setInt('maxConcurrent', maxConcurrent);
+    await p.setInt('maxConcurrentUploads', maxConcurrentUploads);
     await p.setInt('maxBatch', maxBatch);
     await p.setBool('autoCheckLinks', autoCheckLinks);
     await p.setStringList('folders', folders);
@@ -225,6 +229,7 @@ class _HomePageState extends State<HomePage> {
     final be = TextEditingController(text: backend);
     var localMode = mode;
     var localConcurrent = maxConcurrent;
+    var localUploadConcurrent = maxConcurrentUploads;
     var localBatch = maxBatch;
     var localAutoCheck = autoCheckLinks;
     showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: panel, builder: (ctx) => StatefulBuilder(builder: (ctx, refresh) => Padding(
@@ -243,8 +248,10 @@ class _HomePageState extends State<HomePage> {
         const SizedBox(height: 12),
         TextField(controller: be, decoration: const InputDecoration(labelText: 'آدرس بک‌اند Filmcase')),
         const SizedBox(height: 14),
-        Text('حداکثر عملیات بررسی هم‌زمان: $localConcurrent'),
+        Text('حداکثر بررسی لینک هم‌زمان: $localConcurrent'),
         Slider(value: localConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localConcurrent = v.round())),
+        Text('حداکثر آپلود هم‌زمان (پس از فعال‌شدن API): $localUploadConcurrent'),
+        Slider(value: localUploadConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localUploadConcurrent = v.round())),
         Text('حداکثر لینک در هر دسته: $localBatch'),
         Slider(value: localBatch.toDouble(), min: 10, max: 200, divisions: 19, onChanged: (v) => refresh(() => localBatch = v.round())),
         SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('بررسی خودکار لینک بعد از افزودن'), value: localAutoCheck, onChanged: (v) => refresh(() => localAutoCheck = v)),
@@ -255,6 +262,7 @@ class _HomePageState extends State<HomePage> {
           setState(() {
             mode = localMode; apiBase = api.text.trim(); token = tok.text;
             backend = be.text.trim(); maxConcurrent = localConcurrent;
+            maxConcurrentUploads = localUploadConcurrent;
             maxBatch = localBatch; autoCheckLinks = localAutoCheck;
             connectionState = 'تنظیمات ذخیره شد؛ اتصال API تأیید نشده';
           });
@@ -277,6 +285,38 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _deleteItem(UploadItem item) async {
     setState(() => items.remove(item));
+    await _save();
+  }
+
+  Future<void> _duplicateItem(UploadItem item) async {
+    if (items.any((e) => e.url == item.url)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('این لینک از قبل در فهرست وجود دارد.')));
+      return;
+    }
+    setState(() => items.insert(0, UploadItem(item.url, folder: item.folder)));
+    await _save();
+  }
+
+  Future<void> _copyLink(UploadItem item) async {
+    await Clipboard.setData(ClipboardData(text: item.url));
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لینک کپی شد.')));
+  }
+
+  Future<void> _pasteLinks() async {
+    final data = await Clipboard.getData('text/plain');
+    if (data?.text == null || data!.text!.trim().isEmpty) return;
+    linkController.text = data.text!;
+    if (mounted) setState(() => selectedNav = 1);
+  }
+
+  Future<void> _deleteFolder(String name) async {
+    if (name == 'ریشه') return;
+    final hasItems = items.any((e) => e.folder == name);
+    if (hasItems) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ابتدا فایل‌های این پوشه را به پوشه دیگری منتقل کن.')));
+      return;
+    }
+    setState(() { folders.remove(name); if (folder == name) folder = 'ریشه'; });
     await _save();
   }
 
@@ -341,6 +381,7 @@ class _HomePageState extends State<HomePage> {
     const Text('دسترسی سریع', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
     const SizedBox(height: 10),
     _action(Icons.add_link, 'افزودن لینک تکی یا گروهی', () => setState(() => selectedNav = 1)),
+    _action(Icons.content_paste, 'چسباندن لینک‌ها از کلیپ‌بورد', _pasteLinks),
     _action(Icons.playlist_add_check, 'بررسی حجم و سلامت لینک‌ها', _checkAll),
     _action(Icons.create_new_folder_outlined, 'ساخت پوشه', _newFolder),
     _action(Icons.settings_outlined, 'تنظیمات و توکن API', _showSettings),
@@ -358,6 +399,7 @@ class _HomePageState extends State<HomePage> {
     DropdownButtonFormField<String>(value: folder, decoration: const InputDecoration(labelText: 'پوشه مقصد'), items: folders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) => setState(() => folder = v ?? folder)),
     const SizedBox(height: 12),
     OutlinedButton.icon(onPressed: _newFolder, icon: const Icon(Icons.create_new_folder), label: const Text('ساخت پوشه جدید')),
+    Wrap(spacing: 8, runSpacing: 8, children: folders.where((f) => f != 'ریشه').map((f) => InputChip(label: Text(f), onDeleted: () => _deleteFolder(f))).toList()),
     const SizedBox(height: 10),
     FilledButton.icon(onPressed: _addLinks, icon: const Icon(Icons.playlist_add), label: const Text('افزودن به صف')),
     const SizedBox(height: 10),
@@ -365,7 +407,7 @@ class _HomePageState extends State<HomePage> {
     const SizedBox(height: 14),
     Text('جمع حجم لینک‌های بررسی‌شده: ${bytesText(knownTotalBytes)}', style: const TextStyle(fontWeight: FontWeight.bold)),
     const SizedBox(height: 12),
-    const Text('این بررسی با درخواست HTTP HEAD انجام می‌شود. بعضی سرورها این درخواست را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. این مرحله هنوز فایل را به Boxera آپلود نمی‌کند.', style: TextStyle(color: Colors.amber, fontSize: 12)),
+    const Text('سرعت انتقال و زمان باقی‌مانده پس از اتصال به مسیر واقعی آپلود و دریافت رویدادهای پیشرفت قابل نمایش خواهد بود. در حال حاضر فقط بررسی لینک و اندازه فایل انجام می‌شود.\n\nاین بررسی با درخواست HTTP HEAD انجام می‌شود. بعضی سرورها این درخواست را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. این مرحله هنوز فایل را به Boxera آپلود نمی‌کند.', style: TextStyle(color: Colors.amber, fontSize: 12)),
   ]);
 
   Widget _historyPage() => ListView(padding: const EdgeInsets.all(16), children: [
@@ -384,9 +426,11 @@ class _HomePageState extends State<HomePage> {
       subtitle: Text('${item.folder} • ${item.status}\nحجم: ${bytesText(item.sizeBytes)}${item.error == null ? '' : ' • ${item.error}'}', style: const TextStyle(color: Colors.white60), maxLines: 3),
       isThreeLine: true,
       trailing: PopupMenuButton<String>(
-        onSelected: (v) { if (v == 'move') _moveItem(item); if (v == 'delete') _deleteItem(item); if (v == 'check') _checkItems([item]); },
+        onSelected: (v) { if (v == 'move') _moveItem(item); if (v == 'delete') _deleteItem(item); if (v == 'check') _checkItems([item]); if (v == 'copy') _copyLink(item); if (v == 'duplicate') _duplicateItem(item); },
         itemBuilder: (_) => const [
           PopupMenuItem(value: 'check', child: Text('بررسی لینک')),
+          PopupMenuItem(value: 'copy', child: Text('کپی لینک')),
+          PopupMenuItem(value: 'duplicate', child: Text('افزودن نسخه در صف')),
           PopupMenuItem(value: 'move', child: Text('انتقال به پوشه')),
           PopupMenuItem(value: 'delete', child: Text('حذف از فهرست')),
         ],
