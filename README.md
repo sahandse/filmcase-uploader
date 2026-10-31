@@ -32,6 +32,8 @@
 ## ساخت APK
 با Push یا Pull Request روی شاخه `main`، GitHub Actions پروژه Flutter را آماده، تحلیل و APK نسخه Release را می‌سازد. خروجی از بخش Actions و قسمت Artifacts قابل دریافت است.
 
+برای ساخت نسخه ریلیز، تگ نسخه (مثلاً `v1.0.1`) را Push کنید؛ علاوه بر بیلد، یک GitHub Release با فایل `filmcase-uploader-v1.0.1.apk` ساخته و منتشر می‌شود. APK ریلیز فعلاً با کلید دیباگ امضا می‌شود و برای نصب شخصی مناسب است.
+
 ## اجرای محلی
 ```bash
 flutter create --platforms=android --org ir.filmcase .
