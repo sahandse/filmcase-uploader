@@ -1,4 +1,5 @@
 name: Flutter Android build
+
 on:
   push:
     branches: [main]
@@ -6,27 +7,48 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   android:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Generate Android platform scaffold
-        run: flutter create --platforms=android --org ir.filmcase .
-      - name: Install dependencies
+          cache: true
+
+      - name: Generate Android platform files
+        run: flutter create --platforms=android --org ir.filmcase --project-name filmcase_uploader --no-pub .
+
+      - name: Install Flutter dependencies
         run: flutter pub get
-      - name: Format Dart
-        run: dart format lib
-      - name: Analyze
-        run: flutter analyze
+
+      - name: Check Dart formatting
+        run: dart format --output=none --set-exit-if-changed lib
+
+      - name: Analyze Dart and Flutter code
+        run: flutter analyze --no-pub
+
       - name: Build release APK
-        run: flutter build apk --release
-      - name: Upload APK artifact
+        run: flutter build apk --release --no-pub
+
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
           name: filmcase-uploader-android
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+          retention-days: 14
