@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 void main() => runApp(const FilmcaseUploaderApp());
 
@@ -43,6 +44,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  static const _secure = FlutterSecureStorage();
   int tab = 0;
   String mode = 'مستقل با Boxera';
   String apiBase = 'https://boxera.ir/api';
@@ -65,7 +67,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       mode = p.getString('mode') ?? mode;
       apiBase = p.getString('apiBase') ?? apiBase;
-      token = p.getString('token') ?? '';
+      token = await _secure.read(key: 'boxera_upload_token') ?? '';
       backend = p.getString('backend') ?? '';
       folders
         ..clear()
@@ -80,7 +82,7 @@ class _HomePageState extends State<HomePage> {
     final p = await SharedPreferences.getInstance();
     await p.setString('mode', mode);
     await p.setString('apiBase', apiBase);
-    await p.setString('token', token);
+    if (token.isEmpty) { await _secure.delete(key: 'boxera_upload_token'); } else { await _secure.write(key: 'boxera_upload_token', value: token); }
     await p.setString('backend', backend);
     await p.setStringList('folders', folders);
     await p.setStringList('history', items.map((e) => jsonEncode({'url': e.url, 'folder': e.folder})).toList());
