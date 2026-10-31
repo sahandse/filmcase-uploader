@@ -270,6 +270,58 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _validateConnection() async {
+    if (token.trim().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ابتدا توکن Boxera را در تنظیمات وارد و ذخیره کن.')),
+        );
+      }
+      return;
+    }
+    if (mounted) setState(() => connectionState = 'در حال بررسی توکن...');
+    try {
+      final base = apiBase.trim().replaceAll(RegExp(r'/+$'), '');
+      final response = await http.get(
+        Uri.parse('$base/auth/me'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ' + token.trim(),
+        },
+      ).timeout(const Duration(seconds: 25));
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final decoded = jsonDecode(response.body);
+        final root = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+        final data = root['data'] is Map<String, dynamic>
+            ? root['data'] as Map<String, dynamic>
+            : root;
+        final user = data['user'] is Map<String, dynamic>
+            ? data['user'] as Map<String, dynamic>
+            : <String, dynamic>{};
+        final userId = user['id']?.toString();
+        if (!mounted) return;
+        setState(() => connectionState = userId == null
+            ? 'توکن معتبر است؛ حساب متصل شد'
+            : 'حساب Boxera متصل شد • شناسه ' + userId);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('اتصال Boxera با موفقیت تأیید شد.')),
+        );
+      } else {
+        if (!mounted) return;
+        setState(() => connectionState = 'اتصال ناموفق • HTTP ' + response.statusCode.toString());
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Boxera توکن را تأیید نکرد: HTTP ' + response.statusCode.toString())),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => connectionState = 'خطا در ارتباط با Boxera');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ارتباط با Boxera برقرار نشد؛ آدرس API و اینترنت را بررسی کن.')),
+      );
+    }
+  }
+
   void _showSettings() {
     final api = TextEditingController(text: apiBase);
     final tok = TextEditingController(text: token);
@@ -319,7 +371,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'توکن شخصی در فضای امن Android ذخیره می‌شود. اعتبار آن با مسیر واقعی /auth/me بررسی می‌شود. توجه: نگهداری توکن در موبایل برخلاف توصیه امنیتی Boxera برای ذخیره توکن فقط روی سرور است.',
+                  'توکن شخصی در فضای امن Android ذخیره می‌شود. اعتبار آن با مسیر واقعی /auth/me بررسی می‌شود. نگهداری توکن در موبایل برخلاف توصیه امنیتی Boxera برای ذخیره توکن فقط روی سرور است.',
                   style: TextStyle(color: Colors.white60, fontSize: 12),
                 ),
                 const SizedBox(height: 16),
@@ -527,259 +579,4 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() { linkController.dispose(); folderController.dispose(); super.dispose(); }
 }
-), '');
-      final response = await http.get(
-        Uri.parse('$base/auth/me'),
-        headers: {'Accept': 'application/json', 'Authorization': 'Bearer ${token.trim()}'},
-      ).timeout(const Duration(seconds: 25));
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final decoded = jsonDecode(response.body);
-        final root = decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
-        final data = root['data'] is Map<String, dynamic>
-            ? root['data'] as Map<String, dynamic>
-            : root;
-        final user = data['user'] is Map<String, dynamic>
-            ? data['user'] as Map<String, dynamic>
-            : <String, dynamic>{};
-        final userId = user['id']?.toString();
-        if (!mounted) return;
-        setState(() => connectionState = userId == null
-            ? 'توکن معتبر است؛ حساب متصل شد'
-            : 'حساب Boxera متصل شد • شناسه $userId');
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('اتصال Boxera با موفقیت تأیید شد.')),
-        );
-      } else {
-        if (!mounted) return;
-        setState(() => connectionState = 'اتصال ناموفق • HTTP ${response.statusCode}');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Boxera توکن را تأیید نکرد: HTTP ${response.statusCode}')),
-        );
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => connectionState = 'خطا در ارتباط با Boxera');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ارتباط با Boxera برقرار نشد؛ آدرس API و اینترنت را بررسی کن.')),
-      );
-    }
-  }
-
-  void _showSettings() {
-    final api = TextEditingController(text: apiBase);
-    final tok = TextEditingController(text: token);
-    final be = TextEditingController(text: backend);
-    var localMode = mode;
-    var localConcurrent = maxConcurrent;
-    var localUploadConcurrent = maxConcurrentUploads;
-    var localBatch = maxBatch;
-    var localAutoCheck = autoCheckLinks;
-    showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: panel, builder: (ctx) => StatefulBuilder(builder: (ctx, refresh) => Padding(
-      padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
-      child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-        const Text('تنظیمات اتصال و صف', style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 16),
-        DropdownButtonFormField<String>(value: localMode, decoration: const InputDecoration(labelText: 'روش اتصال'), items: const [
-          DropdownMenuItem(value: 'مستقل با Boxera', child: Text('مستقل با Boxera')),
-          DropdownMenuItem(value: 'از طریق بک‌اند Filmcase', child: Text('از طریق بک‌اند Filmcase')),
-        ], onChanged: (v) => refresh(() => localMode = v ?? localMode)),
-        const SizedBox(height: 12),
-        TextField(controller: api, decoration: const InputDecoration(labelText: 'آدرس پایه Boxera')),
-        const SizedBox(height: 12),
-        TextField(controller: tok, obscureText: obscure, decoration: InputDecoration(labelText: 'توکن آپلود Boxera', suffixIcon: IconButton(icon: Icon(obscure ? Icons.visibility : Icons.visibility_off), onPressed: () => refresh(() => obscure = !obscure)))),
-        const SizedBox(height: 12),
-        TextField(controller: be, decoration: const InputDecoration(labelText: 'آدرس بک‌اند Filmcase')),
-        const SizedBox(height: 14),
-        Text('حداکثر بررسی لینک هم‌زمان: $localConcurrent'),
-        Slider(value: localConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localConcurrent = v.round())),
-        Text('حداکثر آپلود هم‌زمان (پس از فعال‌شدن API): $localUploadConcurrent'),
-        Slider(value: localUploadConcurrent.toDouble(), min: 1, max: 5, divisions: 4, onChanged: (v) => refresh(() => localUploadConcurrent = v.round())),
-        Text('حداکثر لینک در هر دسته: $localBatch'),
-        Slider(value: localBatch.toDouble(), min: 10, max: 200, divisions: 19, onChanged: (v) => refresh(() => localBatch = v.round())),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('بررسی خودکار لینک بعد از افزودن'), value: localAutoCheck, onChanged: (v) => refresh(() => localAutoCheck = v)),
-        const SizedBox(height: 8),
-        const Text('توکن در Android Secure Storage نگهداری می‌شود و فقط در حالت مستقل کاربرد دارد. حالت Filmcase باید از بک‌اند امن استفاده کند. این تنظیمات هنوز اتصال یا آپلود Boxera را تأیید نمی‌کنند.', style: TextStyle(color: Colors.white60, fontSize: 12)),
-        const SizedBox(height: 16),
-        FilledButton(onPressed: () async {
-          setState(() {
-            mode = localMode; apiBase = api.text.trim(); token = tok.text;
-            backend = be.text.trim(); maxConcurrent = localConcurrent;
-            maxConcurrentUploads = localUploadConcurrent;
-            maxBatch = localBatch; autoCheckLinks = localAutoCheck;
-            connectionState = 'تنظیمات ذخیره شد؛ اتصال API تأیید نشده';
-          });
-          await _save();
-          if (ctx.mounted) Navigator.pop(ctx);
-        }, child: const Text('ذخیره تنظیمات')),
-      ])),
-    )));
-  }
-
-  Future<void> _moveItem(UploadItem item) async {
-    var target = item.folder;
-    final result = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(
-      title: const Text('انتقال به پوشه'),
-      content: DropdownButtonFormField<String>(value: target, items: folders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) => target = v ?? target),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')), FilledButton(onPressed: () => Navigator.pop(ctx, target), child: const Text('انتقال'))],
-    ));
-    if (result != null) { setState(() => item.folder = result); await _save(); }
-  }
-
-  Future<void> _deleteItem(UploadItem item) async {
-    setState(() => items.remove(item));
-    await _save();
-  }
-
-  Future<void> _duplicateItem(UploadItem item) async {
-    if (items.any((e) => e.url == item.url)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('این لینک از قبل در فهرست وجود دارد.')));
-      return;
-    }
-    setState(() => items.insert(0, UploadItem(item.url, folder: item.folder)));
-    await _save();
-  }
-
-  Future<void> _copyLink(UploadItem item) async {
-    await Clipboard.setData(ClipboardData(text: item.url));
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لینک کپی شد.')));
-  }
-
-  Future<void> _pasteLinks() async {
-    final data = await Clipboard.getData('text/plain');
-    if (data?.text == null || data!.text!.trim().isEmpty) return;
-    linkController.text = data.text!;
-    if (mounted) setState(() => selectedNav = 1);
-  }
-
-  Future<void> _deleteFolder(String name) async {
-    if (name == 'ریشه') return;
-    final hasItems = items.any((e) => e.folder == name);
-    if (hasItems) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ابتدا فایل‌های این پوشه را به پوشه دیگری منتقل کن.')));
-      return;
-    }
-    setState(() { folders.remove(name); if (folder == name) folder = 'ریشه'; });
-    await _save();
-  }
-
-  Future<void> _clearHistory() async {
-    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
-      title: const Text('پاک کردن تاریخچه؟'),
-      content: const Text('همه لینک‌های ثبت‌شده از فهرست محلی حذف می‌شوند. این کار فایل‌های Boxera را حذف نمی‌کند.'),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('انصراف')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('پاک کردن'))],
-    ));
-    if (ok == true) { setState(items.clear); await _save(); }
-  }
-
-  Widget _stat(String title, String value, IconData icon) => Expanded(child: Container(
-    padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: panel, borderRadius: BorderRadius.circular(16)),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Icon(icon, color: orange), const SizedBox(height: 12),
-      Text(value, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
-      Text(title, style: const TextStyle(color: Colors.white60, fontSize: 12)),
-    ]),
-  ));
-
-  Widget _action(IconData icon, String title, VoidCallback onTap) => Card(color: panel, child: ListTile(leading: Icon(icon, color: orange), title: Text(title), trailing: const Icon(Icons.chevron_left), onTap: onTap));
-
-  @override
-  Widget build(BuildContext context) {
-    final pages = [_dashboard(), _linksPage(), _historyPage()];
-    return Directionality(textDirection: TextDirection.rtl, child: Scaffold(
-      appBar: AppBar(
-        title: const Row(children: [Icon(Icons.cloud_upload, color: orange), SizedBox(width: 9), Text('Filmcase Uploader', style: TextStyle(fontWeight: FontWeight.bold))]),
-        actions: [IconButton(onPressed: _showSettings, icon: const Icon(Icons.settings_outlined)), const SizedBox(width: 6)],
-      ),
-      body: SafeArea(child: IndexedStack(index: selectedNav, children: pages)),
-      bottomNavigationBar: NavigationBar(
-        backgroundColor: panel, indicatorColor: orange.withOpacity(.18), selectedIndex: selectedNav,
-        onDestinationSelected: (v) => setState(() => selectedNav = v),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'خانه'),
-          NavigationDestination(icon: Icon(Icons.link), label: 'لینک‌ها'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'صف و تاریخچه'),
-        ],
-      ),
-    ));
-  }
-
-  Widget _dashboard() => ListView(padding: const EdgeInsets.all(16), children: [
-    Container(padding: const EdgeInsets.all(18), decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF392516), Color(0xFF1C1E22)]), borderRadius: BorderRadius.circular(20)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('مدیریت هوشمند آپلود', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 6), Text(mode, style: const TextStyle(color: Colors.white70)),
-      const SizedBox(height: 14), Row(children: [const Icon(Icons.circle, size: 9, color: orange), const SizedBox(width: 7), Expanded(child: Text(connectionState, style: const TextStyle(fontSize: 12, color: Colors.white70)))]),
-    ])),
-    const SizedBox(height: 16),
-    Row(children: [_stat('لینک‌های ثبت‌شده', '${items.length}', Icons.link), const SizedBox(width: 10), _stat('حجم شناخته‌شده', bytesText(knownTotalBytes), Icons.data_usage)]),
-    const SizedBox(height: 10),
-    Row(children: [_stat('پوشه‌ها', '${folders.length}', Icons.folder), const SizedBox(width: 10), _stat('حجم نامشخص', '$unknownCount مورد', Icons.help_outline)]),
-    const SizedBox(height: 10),
-    Container(padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: panel, borderRadius: BorderRadius.circular(16)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('فضای حساب Boxera', style: TextStyle(fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      const Text('تا زمان ارائه endpoint رسمی سهمیه، حجم مصرفی و ظرفیت باقی‌مانده از Boxera قابل دریافت نیست.', style: TextStyle(color: Colors.white60, fontSize: 12)),
-    ])),
-    const SizedBox(height: 18),
-    const Text('دسترسی سریع', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-    const SizedBox(height: 10),
-    _action(Icons.add_link, 'افزودن لینک تکی یا گروهی', () => setState(() => selectedNav = 1)),
-    _action(Icons.content_paste, 'چسباندن لینک‌ها از کلیپ‌بورد', _pasteLinks),
-    _action(Icons.playlist_add_check, 'بررسی حجم و سلامت لینک‌ها', _checkAll),
-    _action(Icons.create_new_folder_outlined, 'ساخت پوشه', _newFolder),
-    _action(Icons.settings_outlined, 'تنظیمات و توکن API', _showSettings),
-    const SizedBox(height: 12),
-    Text('حجم شناخته‌شده لینک‌ها: ${bytesText(knownTotalBytes)} • حجم ${unknownCount} لینک هنوز مشخص نیست.', style: const TextStyle(color: Colors.white54, fontSize: 12)),
-  ]);
-
-  Widget _linksPage() => ListView(padding: const EdgeInsets.all(16), children: [
-    const Text('افزودن از طریق لینک', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-    const SizedBox(height: 6),
-    const Text('یک لینک یا چند لینک را کپی کن؛ هر لینک را در یک خط قرار بده. لینک‌های تکراری و نامعتبر حذف می‌شوند.', style: TextStyle(color: Colors.white60)),
-    const SizedBox(height: 14),
-    TextField(controller: linkController, minLines: 5, maxLines: 10, keyboardType: TextInputType.multiline, decoration: const InputDecoration(hintText: 'https://example.com/video.mp4\nhttps://example.com/film.mkv', alignLabelWithHint: true)),
-    const SizedBox(height: 12),
-    DropdownButtonFormField<String>(value: folder, decoration: const InputDecoration(labelText: 'پوشه مقصد'), items: folders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) => setState(() => folder = v ?? folder)),
-    const SizedBox(height: 12),
-    OutlinedButton.icon(onPressed: _newFolder, icon: const Icon(Icons.create_new_folder), label: const Text('ساخت پوشه جدید')),
-    Wrap(spacing: 8, runSpacing: 8, children: folders.where((f) => f != 'ریشه').map((f) => InputChip(label: Text(f), onDeleted: () => _deleteFolder(f))).toList()),
-    const SizedBox(height: 10),
-    FilledButton.icon(onPressed: _addLinks, icon: const Icon(Icons.playlist_add), label: const Text('افزودن به صف')),
-    const SizedBox(height: 10),
-    OutlinedButton.icon(onPressed: checkingAll ? null : _checkAll, icon: checkingAll ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.fact_check), label: const Text('بررسی لینک‌ها و دریافت حجم')),
-    const SizedBox(height: 14),
-    Text('جمع حجم لینک‌های بررسی‌شده: ${bytesText(knownTotalBytes)}', style: const TextStyle(fontWeight: FontWeight.bold)),
-    const SizedBox(height: 12),
-    const Text('سرعت انتقال و زمان باقی‌مانده پس از اتصال به مسیر واقعی آپلود و دریافت رویدادهای پیشرفت قابل نمایش خواهد بود. در حال حاضر فقط بررسی لینک و اندازه فایل انجام می‌شود.\n\nاین بررسی با درخواست HTTP HEAD انجام می‌شود. بعضی سرورها این درخواست را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. این مرحله هنوز فایل را به Boxera آپلود نمی‌کند.', style: TextStyle(color: Colors.amber, fontSize: 12)),
-  ]);
-
-  Widget _historyPage() => ListView(padding: const EdgeInsets.all(16), children: [
-    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-      const Text('صف و تاریخچه', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-      TextButton(onPressed: _clearHistory, child: const Text('پاک‌کردن فهرست')),
-    ]),
-    Row(children: [
-      Expanded(child: Text('مجموع حجم شناخته‌شده: ${bytesText(knownTotalBytes)}', style: const TextStyle(color: Colors.white70))),
-      TextButton.icon(onPressed: _checkAll, icon: const Icon(Icons.refresh, size: 18), label: const Text('بررسی مجدد')),
-    ]),
-    if (items.isEmpty) const Padding(padding: EdgeInsets.all(30), child: Center(child: Text('هنوز لینکی ثبت نشده است', style: TextStyle(color: Colors.white54)))),
-    ...items.map((item) => Card(color: panel, child: ListTile(
-      leading: CircleAvatar(backgroundColor: const Color(0xFF35291F), child: item.checking ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.video_file, color: orange)),
-      title: Text(item.url, maxLines: 1, overflow: TextOverflow.ellipsis, textDirection: TextDirection.ltr),
-      subtitle: Text('${item.folder} • ${item.status}\nحجم: ${bytesText(item.sizeBytes)}${item.error == null ? '' : ' • ${item.error}'}', style: const TextStyle(color: Colors.white60), maxLines: 3),
-      isThreeLine: true,
-      trailing: PopupMenuButton<String>(
-        onSelected: (v) { if (v == 'move') _moveItem(item); if (v == 'delete') _deleteItem(item); if (v == 'check') _checkItems([item]); if (v == 'copy') _copyLink(item); if (v == 'duplicate') _duplicateItem(item); },
-        itemBuilder: (_) => const [
-          PopupMenuItem(value: 'check', child: Text('بررسی لینک')),
-          PopupMenuItem(value: 'copy', child: Text('کپی لینک')),
-          PopupMenuItem(value: 'duplicate', child: Text('افزودن نسخه در صف')),
-          PopupMenuItem(value: 'move', child: Text('انتقال به پوشه')),
-          PopupMenuItem(value: 'delete', child: Text('حذف از فهرست')),
-        ],
-      ),
-    ))),
-  ]);
-
-  @override
-  void dispose() { linkController.dispose(); folderController.dispose(); super.dispose(); }
-}
+)
