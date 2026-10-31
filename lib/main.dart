@@ -64,10 +64,12 @@ class _HomePageState extends State<HomePage> {
   void initState() { super.initState(); _load(); }
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
+    final savedToken = await _secure.read(key: 'boxera_upload_token') ?? '';
+    if (!mounted) return;
     setState(() {
       mode = p.getString('mode') ?? mode;
       apiBase = p.getString('apiBase') ?? apiBase;
-      token = await _secure.read(key: 'boxera_upload_token') ?? '';
+      token = savedToken;
       backend = p.getString('backend') ?? '';
       folders
         ..clear()
