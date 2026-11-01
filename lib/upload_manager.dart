@@ -5,11 +5,39 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'boxera_api.dart';
 
 const _defaultPartSize = 8 * 1024 * 1024;
+
+bool isHttpLink(String value) {
+  final uri = Uri.tryParse(value.trim());
+  return uri != null &&
+      (uri.scheme == 'http' || uri.scheme == 'https') &&
+      uri.host.isNotEmpty;
+}
+
+String linkVideoName(String url) {
+  final uri = Uri.tryParse(url.trim());
+  var segment = '';
+  if (uri != null) {
+    for (final part in uri.pathSegments) {
+      if (part.trim().isNotEmpty) segment = part;
+    }
+  }
+  segment = Uri.decodeComponent(segment).trim();
+  segment = segment.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
+  if (segment.isEmpty) segment = 'video.mp4';
+  if (!segment.contains('.')) segment = '$segment.mp4';
+  if (segment.length > 150) {
+    final dot = segment.lastIndexOf('.');
+    final extension = dot >= 0 ? segment.substring(dot) : '';
+    segment = '${segment.substring(0, 150 - extension.length)}$extension';
+  }
+  return segment;
+}
 
 int? channelIdOf(String? value) {
   final text = value?.trim() ?? '';
@@ -77,6 +105,8 @@ class VideoUploadJob {
     required this.name,
     required this.size,
     required this.mimeType,
+    this.sourceUrl,
+    this.downloaded = false,
     String? title,
     this.state = stateQueued,
     this.progress = 0,
@@ -100,6 +130,7 @@ class VideoUploadJob {
        createdAt = createdAt ?? DateTime.now();
 
   static const stateQueued = 'queued';
+  static const stateDownloading = 'downloading';
   static const stateUploading = 'uploading';
   static const stateCompleting = 'completing';
   static const stateRegistering = 'registering';
@@ -109,10 +140,12 @@ class VideoUploadJob {
   static const stateCancelled = 'cancelled';
 
   final String id;
-  final String path;
-  final String name;
+  String path;
+  String name;
   int size;
-  final String mimeType;
+  String mimeType;
+  final String? sourceUrl;
+  bool downloaded;
   String title;
   String state;
   double progress;
@@ -133,16 +166,21 @@ class VideoUploadJob {
   int pollFailures = 0;
 
   bool get isRunning =>
+      state == stateDownloading ||
       state == stateUploading ||
       state == stateCompleting ||
       state == stateRegistering;
 
   bool get isReady => state == stateReady;
 
+  bool get isLink => (sourceUrl ?? '').isNotEmpty;
+
   String get stateLabel {
     switch (state) {
       case stateQueued:
         return 'در صف';
+      case stateDownloading:
+        return 'در حال دانلود از لینک';
       case stateUploading:
         return 'در حال آپلود';
       case stateCompleting:
@@ -168,6 +206,8 @@ class VideoUploadJob {
     'name': name,
     'size': size,
     'mimeType': mimeType,
+    'sourceUrl': sourceUrl,
+    'downloaded': downloaded,
     'title': title,
     'state': state,
     'progress': progress,
@@ -197,6 +237,8 @@ class VideoUploadJob {
       name: name,
       size: (json['size'] as num?)?.round() ?? 0,
       mimeType: json['mimeType'] as String? ?? videoMimeType(name),
+      sourceUrl: json['sourceUrl'] as String?,
+      downloaded: json['downloaded'] as bool? ?? false,
       title: json['title'] as String?,
       state: json['state'] as String? ?? stateQueued,
       progress: (json['progress'] as num?)?.toDouble() ?? 0,
@@ -313,6 +355,33 @@ class VideoUploadManager extends ChangeNotifier {
     return added;
   }
 
+  int addLinks(Iterable<String> links) {
+    var added = 0;
+    for (final raw in links) {
+      final url = raw.trim();
+      if (!isHttpLink(url)) continue;
+      if (jobs.any((job) => job.sourceUrl == url && !job.isReady)) continue;
+      final name = linkVideoName(url);
+      jobs.insert(
+        0,
+        VideoUploadJob(
+          id: _newId('job'),
+          path: '',
+          name: name,
+          size: 0,
+          mimeType: videoMimeType(name),
+          sourceUrl: url,
+        ),
+      );
+      added += 1;
+    }
+    if (added > 0) {
+      notifyListeners();
+      unawaited(persist());
+    }
+    return added;
+  }
+
   void startAll({
     required BoxeraApi Function() apiFactory,
     required int concurrency,
@@ -339,7 +408,7 @@ class VideoUploadManager extends ChangeNotifier {
       _cancelled.remove(job.id);
       job.state = VideoUploadJob.stateQueued;
       job.error = null;
-      job.detail = 'در صف آپلود';
+      job.detail = job.isLink ? 'در صف دانلود و آپلود' : 'در صف آپلود';
       if (!_runQueue.contains(job)) _runQueue.add(job);
     }
     notifyListeners();
@@ -389,10 +458,12 @@ class VideoUploadManager extends ChangeNotifier {
   }
 
   void remove(VideoUploadJob job) {
+    final wasActive = _active.contains(job.id);
     _cancelled.add(job.id);
     _runQueue.remove(job);
     _timers.remove(job.id)?.cancel();
     jobs.remove(job);
+    if (!wasActive) unawaited(_cleanupTemp(job));
     notifyListeners();
     unawaited(persist());
   }
@@ -429,7 +500,7 @@ class VideoUploadManager extends ChangeNotifier {
   ) async {
     job.state = VideoUploadJob.stateUploading;
     job.error = null;
-    job.detail = 'آماده‌سازی آپلود';
+    job.detail = job.isLink ? 'آماده‌سازی دانلود از لینک' : 'آماده‌سازی آپلود';
     job.pollFailures = 0;
     notifyListeners();
     await persist();
@@ -463,10 +534,12 @@ class VideoUploadManager extends ChangeNotifier {
     String? channelId,
     bool publicVideo,
   ) async {
-    final file = File(job.path);
+    final file = await _sourceFile(job);
     if (!await file.exists()) {
       throw BoxeraException(
-        'فایل انتخاب‌شده در حافظه موقت برنامه نیست؛ آن را دوباره از گوشی انتخاب کن.',
+        job.isLink
+            ? 'فایل دانلودشده در حافظه موقت نیست؛ دوباره روی «ادامه» بزن.'
+            : 'فایل انتخاب‌شده در حافظه موقت برنامه نیست؛ آن را دوباره از گوشی انتخاب کن.',
       );
     }
     final length = await file.length();
@@ -518,6 +591,233 @@ class VideoUploadManager extends ChangeNotifier {
       await _complete(job, api, parts);
     }
     await _registerAndPoll(job, api, channelId, publicVideo);
+  }
+
+  Future<File> _sourceFile(VideoUploadJob job) async {
+    if (!job.isLink) return File(job.path);
+    if (job.downloaded && job.path.isNotEmpty) {
+      final existing = File(job.path);
+      if (await existing.exists() && await existing.length() > 0) {
+        return existing;
+      }
+    }
+    await _downloadFromLink(job);
+    return File(job.path);
+  }
+
+  Future<void> _downloadFromLink(VideoUploadJob job) async {
+    final url = job.sourceUrl ?? '';
+    final uri = Uri.tryParse(url);
+    if (uri == null || !isHttpLink(url)) {
+      throw BoxeraException(
+        'لینک معتبر نیست؛ فقط آدرس http یا https پذیرفته می‌شود.',
+      );
+    }
+    final initialTitle = defaultVideoTitle(linkVideoName(url));
+    job.state = VideoUploadJob.stateDownloading;
+    job.progress = 0;
+    job.uploadedBytes = 0;
+    job.detail = 'اتصال به لینک...';
+    notifyListeners();
+
+    final dir = await getTemporaryDirectory();
+    final partial = File('${dir.path}/filmcase_${job.id}.part');
+    final request = http.Request('GET', uri)
+      ..followRedirects = true
+      ..maxRedirects = 5
+      ..headers['Accept'] = '*/*'
+      ..headers['User-Agent'] = 'FilmcaseUploader/1.2';
+    final client = http.Client();
+    RandomAccessFile? handle;
+    var received = 0;
+    try {
+      final response = await client
+          .send(request)
+          .timeout(const Duration(seconds: 60));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw BoxeraException(
+          'لینک پاسخ ${response.statusCode} داد؛ فایل باید مستقیم و عمومی باشد.',
+        );
+      }
+      final contentType = (response.headers['content-type'] ?? '')
+          .split(';')
+          .first
+          .trim()
+          .toLowerCase();
+      var name = _filenameFromDisposition(
+        response.headers['content-disposition'],
+      );
+      if (name == null || name.isEmpty) {
+        final segments = uri.pathSegments;
+        name = _safeFileName(
+          segments.isEmpty ? '' : Uri.decodeComponent(segments.last),
+        );
+      }
+      if (name.isEmpty) name = 'video.mp4';
+      if (!name.contains('.')) {
+        name = '$name${_extensionForMime(contentType) ?? '.mp4'}';
+      }
+      job.name = name;
+      job.mimeType = contentType.startsWith('video/')
+          ? contentType
+          : videoMimeType(name);
+      if (job.title == initialTitle) {
+        job.title = defaultVideoTitle(name);
+      }
+      final total = response.contentLength ?? 0;
+      job.size = total;
+      job.detail = total > 0
+          ? 'دانلود 0 از ${_formatBytes(total)}'
+          : 'دانلود از لینک...';
+      notifyListeners();
+
+      if (await partial.exists()) await partial.delete();
+      handle = await partial.open(mode: FileMode.writeOnly);
+      var lastTick = DateTime.now();
+      await for (final chunk in response.stream.timeout(
+        const Duration(seconds: 90),
+      )) {
+        _checkCancelled(job);
+        await handle.writeFrom(chunk);
+        received += chunk.length;
+        job.size = total > 0 ? total : received;
+        job.progress = total > 0 ? (received / total).clamp(0.0, 1.0) : 0.0;
+        final now = DateTime.now();
+        if (now.difference(lastTick) >= const Duration(milliseconds: 400)) {
+          lastTick = now;
+          job.detail = total > 0
+              ? 'دانلود ${_formatBytes(received)} از ${_formatBytes(total)}'
+              : 'دانلود ${_formatBytes(received)}';
+          notifyListeners();
+        }
+      }
+      await handle.flush();
+      await handle.close();
+      handle = null;
+      if (received == 0) {
+        throw BoxeraException('فایلی از این لینک دریافت نشد.');
+      }
+      final dot = job.name.lastIndexOf('.');
+      final extension = dot >= 0
+          ? job.name
+                .substring(dot)
+                .toLowerCase()
+                .replaceAll(RegExp(r'[^a-z0-9.]'), '')
+          : (_extensionForMime(job.mimeType) ?? '.mp4');
+      final target = File('${dir.path}/filmcase_${job.id}$extension');
+      if (await target.exists()) await target.delete();
+      await partial.rename(target.path);
+      job.path = target.path;
+      job.size = received;
+      job.downloaded = true;
+      job.progress = 0;
+      job.detail = 'دانلود کامل شد؛ شروع آپلود به Boxera';
+      notifyListeners();
+      await persist();
+    } on _UploadCancelled {
+      await _discardPartial(handle, partial);
+      rethrow;
+    } catch (error) {
+      await _discardPartial(handle, partial);
+      if (_cancelled.contains(job.id)) throw const _UploadCancelled();
+      if (error is BoxeraException) rethrow;
+      throw BoxeraException(
+        'دانلود از لینک ناموفق بود: ${describeError(error)}',
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<void> _discardPartial(RandomAccessFile? handle, File partial) async {
+    try {
+      if (handle != null) await handle.close();
+    } catch (_) {}
+    try {
+      if (await partial.exists()) await partial.delete();
+    } catch (_) {}
+  }
+
+  Future<void> _cleanupTemp(VideoUploadJob job) async {
+    if (!job.isLink) return;
+    try {
+      if (job.path.isNotEmpty) {
+        final file = File(job.path);
+        if (await file.exists()) await file.delete();
+      }
+      final dir = await getTemporaryDirectory();
+      final partial = File('${dir.path}/filmcase_${job.id}.part');
+      if (await partial.exists()) await partial.delete();
+    } catch (_) {}
+  }
+
+  String _safeFileName(String raw) {
+    var name = raw.split('/').last.split('\\').last.trim();
+    name = name.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_');
+    if (name.length > 150) {
+      final dot = name.lastIndexOf('.');
+      final extension = dot >= 0 ? name.substring(dot) : '';
+      name = '${name.substring(0, 150 - extension.length)}$extension';
+    }
+    return name;
+  }
+
+  String? _filenameFromDisposition(String? header) {
+    if (header == null || header.trim().isEmpty) return null;
+    final encoded = RegExp(
+      r"filename\*\s*=\s*(?:UTF-8'')?([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(header);
+    final plain = RegExp(
+      r'filename\s*=\s*"?([^";]+)"?',
+      caseSensitive: false,
+    ).firstMatch(header);
+    final raw = (encoded?.group(1) ?? plain?.group(1))?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return _safeFileName(Uri.decodeComponent(raw));
+    } catch (_) {
+      return _safeFileName(raw);
+    }
+  }
+
+  String? _extensionForMime(String mimeType) {
+    switch (mimeType.split(';').first.trim().toLowerCase()) {
+      case 'video/mp4':
+        return '.mp4';
+      case 'video/quicktime':
+        return '.mov';
+      case 'video/x-matroska':
+        return '.mkv';
+      case 'video/webm':
+        return '.webm';
+      case 'video/x-msvideo':
+        return '.avi';
+      case 'video/mp2t':
+        return '.ts';
+      case 'video/x-flv':
+        return '.flv';
+      case 'video/mpeg':
+        return '.mpg';
+      case 'video/3gpp':
+        return '.3gp';
+      case 'video/ogg':
+        return '.ogv';
+      default:
+        return null;
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var value = bytes.toDouble();
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    final digits = unit == 0 ? 0 : 1;
+    return '${value.toStringAsFixed(digits)} ${units[unit]}';
   }
 
   Future<void> _complete(
@@ -822,6 +1122,7 @@ class VideoUploadManager extends ChangeNotifier {
           job.progress = 1;
           notifyListeners();
           await persist();
+          unawaited(_cleanupTemp(job));
           return;
         }
         if (info.state == 'failed' || info.state == 'unavailable') {

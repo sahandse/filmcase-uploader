@@ -592,6 +592,21 @@ class _HomePageState extends State<HomePage> {
     if (mounted) setState(() => selectedNav = 1);
   }
 
+  void _uploadLinkQueue() {
+    final added = uploads.addLinks(items.map((item) => item.url));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          added == 0
+              ? 'لینک معتبر جدیدی در صف نبود (تکراری یا نامعتبر).'
+              : '$added لینک برای دانلود و آپلود اضافه شد؛ در تب آپلود صف را شروع کن.',
+        ),
+      ),
+    );
+    if (added > 0) setState(() => selectedNav = 2);
+  }
+
   Future<void> _deleteFolder(String name) async {
     if (name == 'ریشه') return;
     final hasItems = items.any((e) => e.folder == name);
@@ -834,6 +849,7 @@ class _HomePageState extends State<HomePage> {
       ),
       const SizedBox(height: 10),
       _action(Icons.video_library_outlined, 'آپلود ویدیو از گوشی', _pickVideos),
+      _action(Icons.link, 'آپلود ویدیو از لینک', _addLinkJobs),
       _action(
         Icons.cloud_queue,
         'صف آپلود و پردازش ویدیو',
@@ -919,6 +935,12 @@ class _HomePageState extends State<HomePage> {
       ),
       const SizedBox(height: 10),
       OutlinedButton.icon(
+        onPressed: items.isEmpty ? null : _uploadLinkQueue,
+        icon: const Icon(Icons.cloud_upload_outlined),
+        label: const Text('ارسال لینک‌های صف به آپلود Boxera'),
+      ),
+      const SizedBox(height: 10),
+      OutlinedButton.icon(
         onPressed: checkingAll ? null : _checkAll,
         icon: checkingAll
             ? const SizedBox(
@@ -936,7 +958,7 @@ class _HomePageState extends State<HomePage> {
       ),
       const SizedBox(height: 12),
       const Text(
-        'این صفحه فقط لینک‌ها را با درخواست HTTP HEAD بررسی می‌کند و فایل را به Boxera نمی‌فرستد. برای آپلود واقعی ویدیو از گوشی، از تب «آپلود» استفاده کن.\n\nبعضی سرورها درخواست HEAD را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند.',
+        'این صفحه فقط لینک‌ها را با درخواست HTTP HEAD بررسی می‌کند و خودش فایل را آپلود نمی‌کند. برای آپلود واقعی، با دکمه «ارسال لینک‌های صف به آپلود Boxera» لینک‌ها را به صف دانلود و آپلود بفرست و از تب «آپلود» شروع کن.\n\nبعضی سرورها درخواست HEAD را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. برای آپلود، لینک باید مستقیم به فایل ویدیویی برسد.',
         style: TextStyle(color: Colors.amber, fontSize: 12),
       ),
     ],
@@ -1065,6 +1087,51 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _addLinkJobs() async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('آپلود از لینک'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: 3,
+          maxLines: 8,
+          keyboardType: TextInputType.multiline,
+          textDirection: TextDirection.ltr,
+          decoration: const InputDecoration(
+            hintText: 'https://example.com/movie.mp4\nهر لینک در یک خط',
+            alignLabelWithHint: true,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('انصراف'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('افزودن'),
+          ),
+        ],
+      ),
+    );
+    if (value == null) return;
+    final added = uploads.addLinks(value.split(RegExp(r'[\r\n]+')));
+    if (!mounted) return;
+    setState(() => selectedNav = 2);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          added == 0
+              ? 'لینک معتبر جدیدی پیدا نشد (تکراری یا نامعتبر).'
+              : '$added لینک برای دانلود و آپلود اضافه شد.',
+        ),
+      ),
+    );
+  }
+
   void _startUploads({VideoUploadJob? only}) {
     if (token.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1076,7 +1143,7 @@ class _HomePageState extends State<HomePage> {
     }
     if (uploads.jobs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('اول یک ویدیو از گوشی انتخاب کن.')),
+        const SnackBar(content: Text('اول یک ویدیو یا لینک به صف اضافه کن.')),
       );
       return;
     }
@@ -1149,6 +1216,8 @@ class _HomePageState extends State<HomePage> {
     if (job.isReady) return Icons.play_circle_outline;
     if (job.state == VideoUploadJob.stateFailed) return Icons.error_outline;
     if (job.state == VideoUploadJob.stateProcessing) return Icons.hourglass_top;
+    if (job.state == VideoUploadJob.stateDownloading)
+      return Icons.download_outlined;
     if (job.state == VideoUploadJob.stateCancelled)
       return Icons.pause_circle_outline;
     if (job.isRunning) return Icons.cloud_upload_outlined;
@@ -1162,6 +1231,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _jobProgressText(VideoUploadJob job) {
+    if (job.state == VideoUploadJob.stateDownloading) {
+      final percent = (job.progress * 100).round();
+      final detail = job.detail ?? 'دانلود از لینک';
+      return job.size <= 0 ? detail : '$detail • $percent%';
+    }
     if (job.state == VideoUploadJob.stateProcessing) {
       final percent = job.transcodePercent;
       return percent == null
@@ -1212,6 +1286,19 @@ class _HomePageState extends State<HomePage> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
+                      if (job.isLink) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          job.sourceUrl!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textDirection: TextDirection.ltr,
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -1247,7 +1334,10 @@ class _HomePageState extends State<HomePage> {
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: LinearProgressIndicator(
-                  value: job.state == VideoUploadJob.stateUploading
+                  value:
+                      (job.state == VideoUploadJob.stateUploading ||
+                              job.state == VideoUploadJob.stateDownloading) &&
+                          job.size > 0
                       ? job.progress
                       : null,
                   minHeight: 6,
@@ -1317,12 +1407,12 @@ class _HomePageState extends State<HomePage> {
       padding: const EdgeInsets.all(16),
       children: [
         const Text(
-          'آپلود ویدیو از گوشی',
+          'آپلود ویدیو از گوشی یا لینک',
           style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 6),
         const Text(
-          'ویدیو را انتخاب کن؛ فایل به‌صورت چندبخشی به Boxera منتقل می‌شود، ویدیو ثبت و پردازش می‌شود و در پایان لینک M3U8 برای پلیر آماده است.',
+          'ویدیو را انتخاب کن یا لینک مستقیم بده؛ در حالت لینک، فایل اول در حافظه موقت گوشی دانلود می‌شود. بعد از آن به‌صورت چندبخشی به Boxera منتقل، ثبت و پردازش می‌شود و در پایان لینک M3U8 آماده است.',
           style: TextStyle(color: Colors.white60),
         ),
         const SizedBox(height: 12),
@@ -1343,6 +1433,12 @@ class _HomePageState extends State<HomePage> {
           onPressed: _pickVideos,
           icon: const Icon(Icons.video_library_outlined),
           label: const Text('انتخاب ویدیو از گوشی'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _addLinkJobs,
+          icon: const Icon(Icons.link),
+          label: const Text('افزودن لینک مستقیم'),
         ),
         const SizedBox(height: 8),
         Row(
@@ -1375,7 +1471,7 @@ class _HomePageState extends State<HomePage> {
             padding: EdgeInsets.all(30),
             child: Center(
               child: Text(
-                'هنوز ویدیویی انتخاب نشده است.',
+                'هنوز ویدیو یا لینکی اضافه نشده است.',
                 style: TextStyle(color: Colors.white54),
               ),
             ),
@@ -1383,7 +1479,7 @@ class _HomePageState extends State<HomePage> {
         ...jobs.map(_jobCard),
         const SizedBox(height: 12),
         const Text(
-          'این بخش با API رسمی آپلود Boxera کار می‌کند: شروع آپلود، انتقال S3 چندبخشی یا TUS، ثبت رایگان ویدیو و پیگیری پردازش. فقط لینک غیرخالی M3U8 را برای مخاطب ذخیره کن؛ preview_url مخصوص پیش‌نمایش مالک است و ممکن است منقضی شود.\n\nاگر برنامه بسته شود، آپلود نیمه‌کاره با همان file_id ادامه پیدا می‌کند؛ فایل انتخاب‌شده باید در حافظه موقت برنامه باقی بماند. کانال پیش‌فرض ۴۳ (فیلم کیس) است و از تنظیمات قابل تغییر است.',
+          'این بخش با API رسمی آپلود Boxera کار می‌کند: شروع آپلود، انتقال S3 چندبخشی یا TUS، ثبت رایگان ویدیو و پیگیری پردازش. فقط لینک غیرخالی M3U8 را برای مخاطب ذخیره کن؛ preview_url مخصوص پیش‌نمایش مالک است و ممکن است منقضی شود.\n\nاگر برنامه بسته شود، آپلود نیمه‌کاره با همان file_id ادامه پیدا می‌کند؛ فایل انتخاب‌شده باید در حافظه موقت برنامه باقی بماند. کانال پیش‌فرض ۴۳ (فیلم کیس) است و از تنظیمات قابل تغییر است.\n\nدر حالت لینک، آدرس باید مستقیم به فایل ویدیویی (mp4، mkv و...) برسد، نه صفحه پخش یا فهرست m3u8. فایل دانلودشده تا آماده‌شدن ویدیو در حافظه موقت می‌ماند و بعد حذف می‌شود؛ برای حجم زیاد، فضای خالی گوشی و مصرف اینترنت را در نظر بگیر.',
           style: TextStyle(color: Colors.amber, fontSize: 12),
         ),
       ],
