@@ -16,14 +16,8 @@ const orange = Color(0xFFFF8A24);
 const bg = Color(0xFF101114);
 const panel = Color(0xFF1B1E23);
 
-String bytesText(int? value) {
-  if (value == null) return 'نامشخص';
-  if (value < 1024) return '$value B';
-  if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
-  if (value < 1024 * 1024 * 1024)
-    return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
-  return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-}
+String bytesText(int? value) =>
+    value == null ? 'نامشخص' : formatByteCount(value);
 
 class UploadItem {
   UploadItem(this.url, {this.folder = 'ریشه'});
@@ -90,12 +84,14 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   static const _secure = FlutterSecureStorage();
   late final VideoUploadManager uploads;
-  String mode = 'اتصال شخصی Boxera';
   String apiBase = 'https://boxera.ir/api';
   String token = '';
   String channelId = '43';
   bool publicVideo = false;
   bool? canUpload;
+  bool? idempotentInit;
+  String? accountId;
+  DateTime? verifiedAt;
   String folder = 'ریشه';
   final folders = <String>['ریشه', 'فیلم‌ها', 'سریال‌ها', 'دوبله', 'زیرنویس'];
   final items = <UploadItem>[];
@@ -108,8 +104,6 @@ class _HomePageState extends State<HomePage> {
   int maxConcurrent = 2;
   int maxConcurrentUploads = 2;
   int maxBatch = 50;
-  int? accountQuotaBytes;
-  int? accountUsedBytes;
   bool autoCheckLinks = true;
 
   int get knownTotalBytes =>
@@ -136,6 +130,9 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       apiBase = p.getString('apiBase') ?? apiBase;
       token = savedToken;
+      connectionState = savedToken.isEmpty
+          ? 'تنظیم نشده'
+          : 'توکن ذخیره شده؛ اتصال در این اجرا بررسی نشده';
       channelId = p.getString('channelId') ?? '43';
       publicVideo = p.getBool('publicVideo') ?? false;
       maxConcurrent = p.getInt('maxConcurrent') ?? 2;
@@ -235,7 +232,7 @@ class _HomePageState extends State<HomePage> {
         final response = await http
             .head(
               Uri.parse(item.url),
-              headers: {'User-Agent': 'FilmcaseUploader/1.0'},
+              headers: {'User-Agent': 'FilmcaseUploader'},
             )
             .timeout(const Duration(seconds: 20));
         final rawLength = response.headers['content-length'];
@@ -285,11 +282,11 @@ class _HomePageState extends State<HomePage> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('ساخت پوشه جدید'),
+        title: const Text('ساخت دسته محلی جدید'),
         content: TextField(
           controller: folderController,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'نام پوشه'),
+          decoration: const InputDecoration(hintText: 'نام دسته'),
         ),
         actions: [
           TextButton(
@@ -334,11 +331,15 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       setState(() {
         canUpload = info.canUpload;
+        accountId = info.userId;
+        idempotentInit = info.idempotentInit;
+        verifiedAt = DateTime.now();
         final parts = <String>[];
         if (info.userId != null) parts.add('شناسه ${info.userId}');
         if (info.canUpload == true) parts.add('مجوز آپلود فعال');
         if (info.canUpload == false) parts.add('مجوز آپلود غیرفعال');
         if (info.idempotentInit == true) parts.add('idempotency فعال');
+        if (info.idempotentInit == false) parts.add('idempotency گزارش‌نشده');
         connectionState = parts.isEmpty
             ? 'حساب Boxera متصل شد'
             : 'متصل شد • ${parts.join(' • ')}';
@@ -350,6 +351,9 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       setState(() {
         canUpload = null;
+        accountId = null;
+        idempotentInit = null;
+        verifiedAt = null;
         connectionState = 'اتصال ناموفق • ${error.message}';
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -379,7 +383,13 @@ class _HomePageState extends State<HomePage> {
       } else {
         message = 'خطای ارتباط: $detail';
       }
-      setState(() => connectionState = message);
+      setState(() {
+        canUpload = null;
+        accountId = null;
+        idempotentInit = null;
+        verifiedAt = null;
+        connectionState = message;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message), duration: const Duration(seconds: 7)),
       );
@@ -504,6 +514,10 @@ class _HomePageState extends State<HomePage> {
                       maxConcurrentUploads = localUploadConcurrent;
                       maxBatch = localBatch;
                       autoCheckLinks = localAutoCheck;
+                      canUpload = null;
+                      accountId = null;
+                      idempotentInit = null;
+                      verifiedAt = null;
                       connectionState = 'تنظیمات ذخیره شد؛ آماده بررسی اتصال';
                     });
                     await _save();
@@ -516,6 +530,10 @@ class _HomePageState extends State<HomePage> {
                   onPressed: () async {
                     setState(() {
                       token = '';
+                      canUpload = null;
+                      accountId = null;
+                      idempotentInit = null;
+                      verifiedAt = null;
                       connectionState = 'توکن حذف شد';
                     });
                     await _save();
@@ -536,7 +554,7 @@ class _HomePageState extends State<HomePage> {
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('انتقال به پوشه'),
+        title: const Text('انتقال به دسته محلی'),
         content: DropdownButtonFormField<String>(
           value: target,
           items: folders
@@ -613,7 +631,7 @@ class _HomePageState extends State<HomePage> {
     if (hasItems) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('ابتدا فایل‌های این پوشه را به پوشه دیگری منتقل کن.'),
+          content: Text('ابتدا لینک‌های این دسته را به دسته دیگری منتقل کن.'),
         ),
       );
       return;
@@ -649,6 +667,18 @@ class _HomePageState extends State<HomePage> {
       setState(items.clear);
       await _save();
     }
+  }
+
+  String _clockText(DateTime time) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${time.year}/${two(time.month)}/${two(time.day)} '
+        '${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
+  }
+
+  String _queueSpeedText() {
+    final speed = uploads.queueSpeed;
+    if (speed == null) return 'انتقال فعال نیست';
+    return '${formatByteCount(speed.round())}/ث';
   }
 
   Widget _stat(String title, String value, IconData icon) => Expanded(
@@ -767,7 +797,10 @@ class _HomePageState extends State<HomePage> {
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 6),
-            Text(mode, style: const TextStyle(color: Colors.white70)),
+            Text(
+              'سرور: $apiBase • کانال: $channelId',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
             const SizedBox(height: 14),
             Row(
               children: [
@@ -795,7 +828,7 @@ class _HomePageState extends State<HomePage> {
       const SizedBox(height: 10),
       Row(
         children: [
-          _stat('پوشه‌ها', '${folders.length}', Icons.folder),
+          _stat('دسته‌های محلی', '${folders.length}', Icons.folder),
           const SizedBox(width: 10),
           _stat('حجم نامشخص', '$unknownCount مورد', Icons.help_outline),
         ],
@@ -817,6 +850,18 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       const SizedBox(height: 10),
+      Row(
+        children: [
+          _stat('سرعت سنجیده‌شده صف', _queueSpeedText(), Icons.speed),
+          const SizedBox(width: 10),
+          _stat(
+            'آپلودشده به Boxera',
+            bytesText(uploads.movedBytes),
+            Icons.import_export,
+          ),
+        ],
+      ),
+      const SizedBox(height: 10),
       Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -832,12 +877,26 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 8),
             Text(
-              canUpload == null
-                  ? 'برای دیدن وضعیت مجوز آپلود، اتصال را در تنظیمات بررسی کن. سهمیه و سقف هر فایل در پنل Boxera تعیین می‌شود.'
-                  : (canUpload!
-                        ? 'مجوز آپلود فعال است؛ سهمیه و سقف هر فایل در پنل Boxera تعیین می‌شود.'
-                        : 'مجوز آپلود این توکن غیرفعال است؛ در پنل Boxera آن را فعال کن.'),
+              verifiedAt == null
+                  ? 'اتصال در این اجرا با مسیر واقعی /auth/me تأیید نشده است؛ توکن را در تنظیمات ذخیره کن و «ذخیره و بررسی اتصال» را بزن.'
+                  : 'تأییدشده با /auth/me در ${_clockText(verifiedAt!)}\n'
+                        'شناسه حساب: ${accountId ?? 'پاسخ سرور شناسه نداشت'}\n'
+                        'مجوز آپلود: ${switch (canUpload) {
+                          null => 'در پاسخ سرور نبود',
+                          true => 'فعال',
+                          false => 'غیرفعال',
+                        }}\n'
+                        'ارسال تکراری امن (idempotency): ${switch (idempotentInit) {
+                          null => 'در پاسخ سرور نبود',
+                          true => 'فعال',
+                          false => 'غیرفعال',
+                        }}',
               style: const TextStyle(color: Colors.white60, fontSize: 12),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'سهمیه و سقف هر فایل را پنل Boxera تعیین می‌کند و در این پاسخ API گزارش نمی‌شود. عدد «آپلودشده به Boxera» و سرعت‌ها اندازه‌گیری واقعی همین دستگاه است، نه گزارش سرور.',
+              style: TextStyle(color: Colors.white38, fontSize: 11),
             ),
           ],
         ),
@@ -862,7 +921,7 @@ class _HomePageState extends State<HomePage> {
       ),
       _action(Icons.content_paste, 'چسباندن لینک‌ها از کلیپ‌بورد', _pasteLinks),
       _action(Icons.playlist_add_check, 'بررسی حجم و سلامت لینک‌ها', _checkAll),
-      _action(Icons.create_new_folder_outlined, 'ساخت پوشه', _newFolder),
+      _action(Icons.create_new_folder_outlined, 'ساخت دسته محلی', _newFolder),
       _action(Icons.settings_outlined, 'تنظیمات و توکن API', _showSettings),
       _action(
         Icons.network_check,
@@ -904,7 +963,11 @@ class _HomePageState extends State<HomePage> {
       const SizedBox(height: 12),
       DropdownButtonFormField<String>(
         value: folder,
-        decoration: const InputDecoration(labelText: 'پوشه مقصد'),
+        decoration: const InputDecoration(
+          labelText: 'دسته محلی (فقط در این اپ)',
+          helperText:
+              'این دسته به Boxera فرستاده نمی‌شود؛ فقط برای سازمان‌دهی فهرست است.',
+        ),
         items: folders
             .map((f) => DropdownMenuItem(value: f, child: Text(f)))
             .toList(),
@@ -914,7 +977,7 @@ class _HomePageState extends State<HomePage> {
       OutlinedButton.icon(
         onPressed: _newFolder,
         icon: const Icon(Icons.create_new_folder),
-        label: const Text('ساخت پوشه جدید'),
+        label: const Text('ساخت دسته محلی جدید'),
       ),
       Wrap(
         spacing: 8,
@@ -1046,7 +1109,7 @@ class _HomePageState extends State<HomePage> {
                   value: 'duplicate',
                   child: Text('افزودن نسخه در صف'),
                 ),
-                PopupMenuItem(value: 'move', child: Text('انتقال به پوشه')),
+                PopupMenuItem(value: 'move', child: Text('انتقال به دسته')),
                 PopupMenuItem(value: 'delete', child: Text('حذف از فهرست')),
               ],
             ),
@@ -1231,10 +1294,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _jobProgressText(VideoUploadJob job) {
+    final rate = _rateText(job);
     if (job.state == VideoUploadJob.stateDownloading) {
       final percent = (job.progress * 100).round();
       final detail = job.detail ?? 'دانلود از لینک';
-      return job.size <= 0 ? detail : '$detail • $percent%';
+      return [
+        job.size <= 0 ? detail : '$detail • $percent%',
+        rate,
+      ].where((e) => e.isNotEmpty).join(' • ');
     }
     if (job.state == VideoUploadJob.stateProcessing) {
       final percent = job.transcodePercent;
@@ -1243,9 +1310,23 @@ class _HomePageState extends State<HomePage> {
           : 'پردازش ویدیو: $percent%';
     }
     if (job.state == VideoUploadJob.stateUploading) {
-      return '${bytesText(job.uploadedBytes)} از ${bytesText(job.size)} • ${(job.progress * 100).round()}%';
+      final base =
+          '${bytesText(job.uploadedBytes)} از ${bytesText(job.size)} • ${(job.progress * 100).round()}%';
+      return rate.isEmpty ? base : '$base • $rate';
     }
-    return 'در حال نهایی‌سازی...';
+    if (job.state == VideoUploadJob.stateCompleting ||
+        job.state == VideoUploadJob.stateRegistering) {
+      return job.detail ?? 'نهایی‌سازی در Boxera';
+    }
+    return 'در انتظار پاسخ Boxera...';
+  }
+
+  String _rateText(VideoUploadJob job) {
+    final speed = job.bytesPerSecond;
+    if (speed == null) return '';
+    final rate = 'سرعت ${formatByteCount(speed.round())}/ث';
+    final eta = etaText(job.remainingSeconds);
+    return eta.isEmpty ? rate : '$rate • باقی‌مانده $eta';
   }
 
   Widget _jobCard(VideoUploadJob job) {
@@ -1462,7 +1543,7 @@ class _HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: 10),
         Text(
-          '${jobs.length} ویدیو در صف • ${uploads.activeCount} آپلود هم‌زمان • ${uploads.readyCount} آماده پخش',
+          '${jobs.length} ویدیو در صف • ${uploads.activeCount} کار فعال • ${uploads.readyCount} آماده پخش • سرعت سنجیده‌شده: ${_queueSpeedText()}',
           style: const TextStyle(color: Colors.white54, fontSize: 12),
         ),
         const SizedBox(height: 8),

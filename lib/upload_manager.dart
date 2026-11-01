@@ -39,6 +39,94 @@ String linkVideoName(String url) {
   return segment;
 }
 
+String formatByteCount(int bytes) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var value = bytes.toDouble();
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return '${value.toStringAsFixed(unit == 0 ? 0 : 1)} ${units[unit]}';
+}
+
+/// Sliding-window average of a byte counter; reports only measured values.
+class TransferMeter {
+  TransferMeter({
+    Duration window = const Duration(seconds: 15),
+    Duration minInterval = const Duration(milliseconds: 250),
+  }) : _window = window,
+       _minInterval = minInterval;
+
+  final Duration _window;
+  final Duration _minInterval;
+  final List<_TransferSample> _samples = [];
+
+  double? _bytesPerSecond;
+  int? _remainingSeconds;
+
+  double? get bytesPerSecond => _bytesPerSecond;
+  int? get remainingSeconds => _remainingSeconds;
+
+  void reset() {
+    _samples.clear();
+    _bytesPerSecond = null;
+    _remainingSeconds = null;
+  }
+
+  void sample(int bytes, int totalBytes, [DateTime? at]) {
+    final now = at ?? DateTime.now();
+    if (_samples.isNotEmpty && bytes < _samples.last.bytes) _samples.clear();
+    if (_samples.isNotEmpty &&
+        now.difference(_samples.last.at) < _minInterval) {
+      return;
+    }
+    _samples.add(_TransferSample(now, bytes));
+    while (_samples.length > 2 && now.difference(_samples.first.at) > _window) {
+      _samples.removeAt(0);
+    }
+    final first = _samples.first;
+    final last = _samples.last;
+    final elapsed = last.at.difference(first.at).inMilliseconds / 1000.0;
+    if (elapsed < 1 || last.bytes <= first.bytes) {
+      _bytesPerSecond = null;
+      _remainingSeconds = null;
+      return;
+    }
+    final speed = (last.bytes - first.bytes) / elapsed;
+    _bytesPerSecond = speed;
+    if (totalBytes > last.bytes) {
+      _remainingSeconds = ((totalBytes - last.bytes) / speed).round();
+    } else {
+      _remainingSeconds = totalBytes > 0 ? 0 : null;
+    }
+  }
+}
+
+class _TransferSample {
+  const _TransferSample(this.at, this.bytes);
+  final DateTime at;
+  final int bytes;
+}
+
+String speedText(double? bytesPerSecond) => bytesPerSecond == null
+    ? ''
+    : '${formatByteCount(bytesPerSecond.round())}/ث';
+
+String etaText(int? seconds) {
+  if (seconds == null) return '';
+  if (seconds <= 0) return 'چند لحظه';
+  final hours = seconds ~/ 3600;
+  final minutes = (seconds % 3600) ~/ 60;
+  final secs = seconds % 60;
+  final parts = <String>[
+    if (hours > 0) '$hours ساعت',
+    if (minutes > 0) '$minutes دقیقه',
+    if (hours == 0 && secs > 0) '$secs ثانیه',
+  ];
+  return parts.isEmpty ? 'کمتر از ۱ ثانیه' : parts.join(' و ');
+}
+
 int? channelIdOf(String? value) {
   final text = value?.trim() ?? '';
   if (text.isEmpty) return null;
@@ -165,6 +253,12 @@ class VideoUploadJob {
   final DateTime createdAt;
   int pollFailures = 0;
 
+  /// Live rate of the phase currently moving bytes; never persisted.
+  final TransferMeter meter = TransferMeter();
+
+  double? get bytesPerSecond => meter.bytesPerSecond;
+  int? get remainingSeconds => meter.remainingSeconds;
+
   bool get isRunning =>
       state == stateDownloading ||
       state == stateUploading ||
@@ -172,6 +266,10 @@ class VideoUploadJob {
       state == stateRegistering;
 
   bool get isReady => state == stateReady;
+
+  /// States where bytes are currently crossing the network.
+  bool get isMovingBytes =>
+      state == stateDownloading || state == stateUploading;
 
   bool get isLink => (sourceUrl ?? '').isNotEmpty;
 
@@ -286,6 +384,21 @@ class VideoUploadManager extends ChangeNotifier {
   int get readyCount => jobs.where((job) => job.isReady).length;
   int get queuedCount =>
       jobs.where((job) => job.state == VideoUploadJob.stateQueued).length;
+
+  /// Bytes this device has actually moved into Boxera for the listed jobs.
+  int get movedBytes =>
+      jobs.fold<int>(0, (sum, job) => sum + job.uploadedBytes);
+
+  /// Sum of the live rates of the jobs currently moving bytes, or null.
+  double? get queueSpeed {
+    double? total;
+    for (final job in jobs) {
+      if (!job.isMovingBytes) continue;
+      final speed = job.bytesPerSecond;
+      if (speed != null) total = (total ?? 0) + speed;
+    }
+    return total;
+  }
 
   @override
   void notifyListeners() {
@@ -571,6 +684,7 @@ class VideoUploadManager extends ChangeNotifier {
     job.fileId = session.fileId ?? job.fileId;
     if (session.partSize > 0) job.partSize = session.partSize;
     job.requestId = null;
+    job.meter.reset();
     job.detail = 'اتصال به Boxera برقرار شد';
     await persist();
     if (session.uploadStatus == 'completed') {
@@ -617,6 +731,7 @@ class VideoUploadManager extends ChangeNotifier {
     job.state = VideoUploadJob.stateDownloading;
     job.progress = 0;
     job.uploadedBytes = 0;
+    job.meter.reset();
     job.detail = 'اتصال به لینک...';
     notifyListeners();
 
@@ -626,7 +741,7 @@ class VideoUploadManager extends ChangeNotifier {
       ..followRedirects = true
       ..maxRedirects = 5
       ..headers['Accept'] = '*/*'
-      ..headers['User-Agent'] = 'FilmcaseUploader/1.2';
+      ..headers['User-Agent'] = 'FilmcaseUploader';
     final client = http.Client();
     RandomAccessFile? handle;
     var received = 0;
@@ -680,6 +795,7 @@ class VideoUploadManager extends ChangeNotifier {
         _checkCancelled(job);
         await handle.writeFrom(chunk);
         received += chunk.length;
+        job.meter.sample(received, total);
         job.size = total > 0 ? total : received;
         job.progress = total > 0 ? (received / total).clamp(0.0, 1.0) : 0.0;
         final now = DateTime.now();
@@ -808,17 +924,7 @@ class VideoUploadManager extends ChangeNotifier {
     }
   }
 
-  String _formatBytes(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var value = bytes.toDouble();
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit += 1;
-    }
-    final digits = unit == 0 ? 0 : 1;
-    return '${value.toStringAsFixed(digits)} ${units[unit]}';
-  }
+  String _formatBytes(int bytes) => formatByteCount(bytes);
 
   Future<void> _complete(
     VideoUploadJob job,
@@ -884,7 +990,7 @@ class VideoUploadManager extends ChangeNotifier {
         notifyListeners();
         final etag = await _putPart(job, api, session.id, part, bytes);
         collected[part.number] = etag;
-        _refreshUploaded(job, collected, partSize);
+        _refreshUploaded(job, collected, partSize, measured: true);
         notifyListeners();
         await persist();
       }
@@ -1045,6 +1151,7 @@ class VideoUploadManager extends ChangeNotifier {
       offset = next ?? (offset + bytes.length);
       job.uploadedBytes = offset;
       job.progress = job.size <= 0 ? 0 : (offset / job.size).clamp(0.0, 1.0);
+      job.meter.sample(offset, job.size);
       notifyListeners();
       await persist();
     }
@@ -1208,14 +1315,18 @@ class VideoUploadManager extends ChangeNotifier {
   void _refreshUploaded(
     VideoUploadJob job,
     Map<int, String> etags,
-    int partSize,
-  ) {
+    int partSize, {
+    bool measured = false,
+  }) {
     var bytes = 0;
     for (final number in etags.keys) {
       bytes += _partLength(number, job.size, partSize);
     }
     job.uploadedBytes = bytes;
     job.progress = job.size <= 0 ? 0 : (bytes / job.size).clamp(0.0, 1.0);
+    // Only bytes this run actually pushed are timed; adopted server parts are
+    // not a transfer and would invent a rate.
+    if (measured) job.meter.sample(bytes, job.size);
   }
 
   void _checkCancelled(VideoUploadJob job) {
