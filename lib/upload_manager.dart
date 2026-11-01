@@ -50,6 +50,15 @@ String formatByteCount(int bytes) {
   return '${value.toStringAsFixed(unit == 0 ? 0 : 1)} ${units[unit]}';
 }
 
+/// Total size declared by a `Content-Range: bytes 0-0/12345` header.
+int? totalFromContentRange(String? header) {
+  final text = (header ?? '').trim();
+  final slash = text.lastIndexOf('/');
+  if (slash < 0 || slash == text.length - 1) return null;
+  final total = int.tryParse(text.substring(slash + 1).trim());
+  return total == null || total <= 0 ? null : total;
+}
+
 /// Sliding-window average of a byte counter; reports only measured values.
 class TransferMeter {
   TransferMeter({
@@ -125,6 +134,123 @@ String etaText(int? seconds) {
     if (hours == 0 && secs > 0) '$secs ثانیه',
   ];
   return parts.isEmpty ? 'کمتر از ۱ ثانیه' : parts.join(' و ');
+}
+
+/// Where the bytes of a job come from, read one upload part at a time.
+abstract class VideoByteSource {
+  int get size;
+
+  Future<Uint8List> read(int offset, int length);
+
+  Future<void> close() async {}
+}
+
+class FileByteSource implements VideoByteSource {
+  FileByteSource(this.file, this.size);
+
+  final File file;
+  @override
+  final int size;
+
+  @override
+  Future<Uint8List> read(int offset, int length) async {
+    final bytes = Uint8List(length);
+    final handle = await file.open();
+    var filled = 0;
+    try {
+      await handle.setPosition(offset);
+      while (filled < length) {
+        final chunk = await handle.read(length - filled);
+        if (chunk.isEmpty) break;
+        bytes.setRange(filled, filled + chunk.length, chunk);
+        filled += chunk.length;
+      }
+    } finally {
+      await handle.close();
+    }
+    if (filled == 0) {
+      throw BoxeraException('خواندن بخش فایل از حافظهٔ گوشی ممکن نشد.');
+    }
+    return filled == length ? bytes : bytes.sublist(0, filled);
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+/// Relays a remote file to Boxera one HTTP range at a time, so no copy of the
+/// video is ever written to the phone.
+class RangeHttpByteSource implements VideoByteSource {
+  RangeHttpByteSource(this.uri, this.size, this._client, this._isCancelled);
+
+  final Uri uri;
+  @override
+  final int size;
+  final http.Client _client;
+  final bool Function() _isCancelled;
+
+  @override
+  Future<Uint8List> read(int offset, int length) async {
+    Object? lastError;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await _readOnce(offset, length);
+      } on _UploadCancelled {
+        rethrow;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) {
+          await Future<void>.delayed(Duration(seconds: attempt * 2));
+        }
+      }
+    }
+    throw lastError is BoxeraException
+        ? lastError
+        : BoxeraException(
+            'خواندن بخش لینک ناموفق بود: ${describeError(lastError!)}',
+          );
+  }
+
+  Future<Uint8List> _readOnce(int offset, int length) async {
+    if (_isCancelled()) throw const _UploadCancelled();
+    final request = http.Request('GET', uri)
+      ..followRedirects = true
+      ..maxRedirects = 5
+      ..headers['Range'] = 'bytes=$offset-${offset + length - 1}'
+      ..headers['Accept'] = '*/*'
+      ..headers['User-Agent'] = 'FilmcaseUploader';
+    final response = await _client
+        .send(request)
+        .timeout(const Duration(seconds: 60));
+    if (response.statusCode != 206) {
+      await response.stream.drain<void>();
+      throw BoxeraException(
+        'سرور لینک تکه‌ای از فایل را با Range نداد (پاسخ ${response.statusCode})؛ '
+        'این لینک باید پشتیبانی Range داشته باشد.',
+      );
+    }
+    final bytes = Uint8List(length);
+    var filled = 0;
+    await for (final chunk in response.stream.timeout(
+      const Duration(minutes: 5),
+    )) {
+      if (_isCancelled()) throw const _UploadCancelled();
+      if (filled + chunk.length > length) {
+        throw BoxeraException('سرور لینک بیش از اندازهٔ درخواستی داده فرستاد.');
+      }
+      bytes.setRange(filled, filled + chunk.length, chunk);
+      filled += chunk.length;
+    }
+    if (filled != length) {
+      throw BoxeraException(
+        'سرور لینک $length بایت بده بود ولی $filled بایت داد.',
+      );
+    }
+    return bytes;
+  }
+
+  @override
+  Future<void> close() async => _client.close();
 }
 
 int? channelIdOf(String? value) {
@@ -278,7 +404,7 @@ class VideoUploadJob {
       case stateQueued:
         return 'در صف';
       case stateDownloading:
-        return 'در حال دانلود از لینک';
+        return 'در حال خواندن از لینک';
       case stateUploading:
         return 'در حال آپلود';
       case stateCompleting:
@@ -521,7 +647,7 @@ class VideoUploadManager extends ChangeNotifier {
       _cancelled.remove(job.id);
       job.state = VideoUploadJob.stateQueued;
       job.error = null;
-      job.detail = job.isLink ? 'در صف دانلود و آپلود' : 'در صف آپلود';
+      job.detail = job.isLink ? 'در صف انتقال از لینک' : 'در صف آپلود';
       if (!_runQueue.contains(job)) _runQueue.add(job);
     }
     notifyListeners();
@@ -613,7 +739,7 @@ class VideoUploadManager extends ChangeNotifier {
   ) async {
     job.state = VideoUploadJob.stateUploading;
     job.error = null;
-    job.detail = job.isLink ? 'آماده‌سازی دانلود از لینک' : 'آماده‌سازی آپلود';
+    job.detail = job.isLink ? 'باز کردن منبع لینک' : 'باز کردن فایل انتخاب‌شده';
     job.pollFailures = 0;
     notifyListeners();
     await persist();
@@ -647,79 +773,91 @@ class VideoUploadManager extends ChangeNotifier {
     String? channelId,
     bool publicVideo,
   ) async {
-    final file = await _sourceFile(job);
-    if (!await file.exists()) {
-      throw BoxeraException(
-        job.isLink
-            ? 'فایل دانلودشده در حافظه موقت نیست؛ دوباره روی «ادامه» بزن.'
-            : 'فایل انتخاب‌شده در حافظه موقت برنامه نیست؛ آن را دوباره از گوشی انتخاب کن.',
+    final source = await _openSource(job);
+    try {
+      final length = source.size;
+      if (length <= 0) throw BoxeraException('منبع ویدیو خالی است.');
+      job.state = VideoUploadJob.stateUploading;
+      if (length != job.size) {
+        job.size = length;
+        job.fileId = null;
+        job.sessionId = null;
+        job.requestId = null;
+        job.uploadedBytes = 0;
+        job.progress = 0;
+      }
+      _checkCancelled(job);
+      final requestId = job.requestId ?? _newId('upload');
+      job.requestId = requestId;
+      await persist();
+      final session = await api.initUpload(
+        originalName: job.name,
+        mimeType: job.mimeType,
+        sizeBytes: job.size,
+        requestId: requestId,
+        channelId: channelIdOf(channelId),
+        fileId: job.fileId,
+        partSize: job.partSize ?? _defaultPartSize,
       );
-    }
-    final length = await file.length();
-    if (length <= 0) throw BoxeraException('فایل انتخاب‌شده خالی است.');
-    if (length != job.size) {
-      job.size = length;
-      job.fileId = null;
-      job.sessionId = null;
+      _checkCancelled(job);
+      job.sessionId = session.id;
+      job.protocol = session.protocol;
+      job.fileId = session.fileId ?? job.fileId;
+      if (session.partSize > 0) job.partSize = session.partSize;
       job.requestId = null;
-      job.uploadedBytes = 0;
-      job.progress = 0;
-    }
-    _checkCancelled(job);
-    final requestId = job.requestId ?? _newId('upload');
-    job.requestId = requestId;
-    await persist();
-    final session = await api.initUpload(
-      originalName: job.name,
-      mimeType: job.mimeType,
-      sizeBytes: job.size,
-      requestId: requestId,
-      channelId: channelIdOf(channelId),
-      fileId: job.fileId,
-      partSize: job.partSize ?? _defaultPartSize,
-    );
-    _checkCancelled(job);
-    job.sessionId = session.id;
-    job.protocol = session.protocol;
-    job.fileId = session.fileId ?? job.fileId;
-    if (session.partSize > 0) job.partSize = session.partSize;
-    job.requestId = null;
-    job.meter.reset();
-    job.detail = 'اتصال به Boxera برقرار شد';
-    await persist();
-    if (session.uploadStatus == 'completed') {
-      job.uploadedBytes = job.size;
-      job.progress = 1;
+      job.meter.reset();
+      job.detail = 'اتصال به Boxera برقرار شد';
       notifyListeners();
+      await persist();
+      if (session.uploadStatus == 'completed') {
+        job.uploadedBytes = job.size;
+        job.progress = 1;
+        notifyListeners();
+        await _registerAndPoll(job, api, channelId, publicVideo);
+        return;
+      }
+      if (session.protocol == 'tus-edge') {
+        await _uploadTus(job, api, session, source);
+        job.state = VideoUploadJob.stateCompleting;
+        job.detail = 'نهایی‌سازی آپلود';
+        notifyListeners();
+        await _complete(job, api, const []);
+      } else {
+        final parts = await _uploadMultipart(job, api, session, source);
+        await _complete(job, api, parts);
+      }
       await _registerAndPoll(job, api, channelId, publicVideo);
-      return;
+    } finally {
+      await source.close();
     }
-    if (session.protocol == 'tus-edge') {
-      await _uploadTus(job, api, session, file);
-      job.state = VideoUploadJob.stateCompleting;
-      job.detail = 'نهایی‌سازی آپلود';
-      notifyListeners();
-      await _complete(job, api, const []);
-    } else {
-      final parts = await _uploadMultipart(job, api, session, file);
-      await _complete(job, api, parts);
-    }
-    await _registerAndPoll(job, api, channelId, publicVideo);
   }
 
-  Future<File> _sourceFile(VideoUploadJob job) async {
-    if (!job.isLink) return File(job.path);
+  Future<VideoByteSource> _openSource(VideoUploadJob job) async {
+    if (!job.isLink) {
+      final file = File(job.path);
+      if (!await file.exists()) {
+        throw BoxeraException(
+          'فایل انتخاب‌شده در حافظه موقت برنامه نیست؛ آن را دوباره از گوشی انتخاب کن.',
+        );
+      }
+      final size = await file.length();
+      if (size <= 0) throw BoxeraException('فایل انتخاب‌شده خالی است.');
+      return FileByteSource(file, size);
+    }
     if (job.downloaded && job.path.isNotEmpty) {
       final existing = File(job.path);
-      if (await existing.exists() && await existing.length() > 0) {
-        return existing;
-      }
+      final length = await existing.exists() ? await existing.length() : 0;
+      if (length > 0) return FileByteSource(existing, length);
     }
-    await _downloadFromLink(job);
-    return File(job.path);
+    final streamed = await _probeLink(job);
+    if (streamed != null) return streamed;
+    final file = await _downloadLinkToTempFile(job);
+    return FileByteSource(file, await file.length());
   }
 
-  Future<void> _downloadFromLink(VideoUploadJob job) async {
+  /// Asks the link for one byte with a Range header: a 206 answer means the
+  /// file can be relayed to Boxera in pieces without storing it on the phone.
+  Future<RangeHttpByteSource?> _probeLink(VideoUploadJob job) async {
     final url = job.sourceUrl ?? '';
     final uri = Uri.tryParse(url);
     if (uri == null || !isHttpLink(url)) {
@@ -732,7 +870,97 @@ class VideoUploadManager extends ChangeNotifier {
     job.progress = 0;
     job.uploadedBytes = 0;
     job.meter.reset();
-    job.detail = 'اتصال به لینک...';
+    job.detail = 'بررسی لینک برای انتقال تکه‌ای...';
+    notifyListeners();
+
+    final client = http.Client();
+    var handedOver = false;
+    try {
+      final request = http.Request('GET', uri)
+        ..followRedirects = true
+        ..maxRedirects = 5
+        ..headers['Accept'] = '*/*'
+        ..headers['User-Agent'] = 'FilmcaseUploader'
+        ..headers['Range'] = 'bytes=0-0';
+      final response = await client
+          .send(request)
+          .timeout(const Duration(seconds: 45));
+      _checkCancelled(job);
+      final total = totalFromContentRange(response.headers['content-range']);
+      if (response.statusCode != 206 || total == null) {
+        await response.stream.listen((_) {}).cancel();
+        return null;
+      }
+      await response.stream.drain<void>();
+      _applyLinkMetadata(job, response.headers, uri, initialTitle);
+      job.size = total;
+      job.downloaded = false;
+      job.detail = 'انتقال تکه‌ای از لینک؛ بدون ذخیره در گوشی';
+      notifyListeners();
+      await persist();
+      handedOver = true;
+      return RangeHttpByteSource(
+        uri,
+        total,
+        client,
+        () => _cancelled.contains(job.id),
+      );
+    } on _UploadCancelled {
+      rethrow;
+    } catch (_) {
+      // Any failed probe falls back to the temporary-file path, which reports
+      // the real error if the link cannot be fetched at all.
+      return null;
+    } finally {
+      if (!handedOver) client.close();
+    }
+  }
+
+  void _applyLinkMetadata(
+    VideoUploadJob job,
+    Map<String, String> headers,
+    Uri uri,
+    String initialTitle,
+  ) {
+    final contentType = (headers['content-type'] ?? '')
+        .split(';')
+        .first
+        .trim()
+        .toLowerCase();
+    var name = _filenameFromDisposition(headers['content-disposition']);
+    if (name == null || name.isEmpty) {
+      final segments = uri.pathSegments;
+      name = _safeFileName(
+        segments.isEmpty ? '' : Uri.decodeComponent(segments.last),
+      );
+    }
+    if (name.isEmpty) name = 'video.mp4';
+    if (!name.contains('.')) {
+      name = '$name${_extensionForMime(contentType) ?? '.mp4'}';
+    }
+    job.name = name;
+    job.mimeType = contentType.startsWith('video/')
+        ? contentType
+        : videoMimeType(name);
+    if (job.title == initialTitle) {
+      job.title = defaultVideoTitle(name);
+    }
+  }
+
+  Future<File> _downloadLinkToTempFile(VideoUploadJob job) async {
+    final url = job.sourceUrl ?? '';
+    final uri = Uri.tryParse(url);
+    if (uri == null || !isHttpLink(url)) {
+      throw BoxeraException(
+        'لینک معتبر نیست؛ فقط آدرس http یا https پذیرفته می‌شود.',
+      );
+    }
+    final initialTitle = defaultVideoTitle(linkVideoName(url));
+    job.state = VideoUploadJob.stateDownloading;
+    job.progress = 0;
+    job.uploadedBytes = 0;
+    job.meter.reset();
+    job.detail = 'انتقال تکه‌ای ممکن نشد؛ دانلود موقت در حافظهٔ گوشی';
     notifyListeners();
 
     final dir = await getTemporaryDirectory();
@@ -754,31 +982,7 @@ class VideoUploadManager extends ChangeNotifier {
           'لینک پاسخ ${response.statusCode} داد؛ فایل باید مستقیم و عمومی باشد.',
         );
       }
-      final contentType = (response.headers['content-type'] ?? '')
-          .split(';')
-          .first
-          .trim()
-          .toLowerCase();
-      var name = _filenameFromDisposition(
-        response.headers['content-disposition'],
-      );
-      if (name == null || name.isEmpty) {
-        final segments = uri.pathSegments;
-        name = _safeFileName(
-          segments.isEmpty ? '' : Uri.decodeComponent(segments.last),
-        );
-      }
-      if (name.isEmpty) name = 'video.mp4';
-      if (!name.contains('.')) {
-        name = '$name${_extensionForMime(contentType) ?? '.mp4'}';
-      }
-      job.name = name;
-      job.mimeType = contentType.startsWith('video/')
-          ? contentType
-          : videoMimeType(name);
-      if (job.title == initialTitle) {
-        job.title = defaultVideoTitle(name);
-      }
+      _applyLinkMetadata(job, response.headers, uri, initialTitle);
       final total = response.contentLength ?? 0;
       job.size = total;
       job.detail = total > 0
@@ -830,6 +1034,7 @@ class VideoUploadManager extends ChangeNotifier {
       job.detail = 'دانلود کامل شد؛ شروع آپلود به Boxera';
       notifyListeners();
       await persist();
+      return target;
     } on _UploadCancelled {
       await _discardPartial(handle, partial);
       rethrow;
@@ -953,7 +1158,7 @@ class VideoUploadManager extends ChangeNotifier {
     VideoUploadJob job,
     BoxeraApi api,
     UploadSession session,
-    File file,
+    VideoByteSource source,
   ) async {
     final partSize = session.partSize > 0
         ? session.partSize
@@ -985,8 +1190,15 @@ class VideoUploadManager extends ChangeNotifier {
         final offset = (part.number - 1) * partSize;
         final length = _partLength(part.number, job.size, partSize);
         if (length <= 0) continue;
-        final bytes = await _readChunk(file, offset, length);
-        job.detail = 'آپلود بخش ${part.number} از $partCount';
+        job.detail = _partDetail(job, part.number, partCount, 'خواندن از لینک');
+        notifyListeners();
+        final bytes = await source.read(offset, length);
+        job.detail = _partDetail(
+          job,
+          part.number,
+          partCount,
+          'آپلود به Boxera',
+        );
         notifyListeners();
         final etag = await _putPart(job, api, session.id, part, bytes);
         collected[part.number] = etag;
@@ -1092,7 +1304,7 @@ class VideoUploadManager extends ChangeNotifier {
     VideoUploadJob job,
     BoxeraApi api,
     UploadSession session,
-    File file,
+    VideoByteSource source,
   ) async {
     final url = session.uploadUrl;
     if (url == null || url.isEmpty) {
@@ -1122,8 +1334,11 @@ class VideoUploadManager extends ChangeNotifier {
     while (offset < job.size) {
       _checkCancelled(job);
       final length = min(partSize, job.size - offset);
-      final bytes = await _readChunk(file, offset, length);
-      job.detail = 'آپلود بخش ${offset ~/ partSize + 1} از $totalParts';
+      final number = offset ~/ partSize + 1;
+      job.detail = _partDetail(job, number, totalParts, 'خواندن از لینک');
+      notifyListeners();
+      final bytes = await source.read(offset, length);
+      job.detail = _partDetail(job, number, totalParts, 'آپلود به Boxera');
       notifyListeners();
       http.Response response;
       try {
@@ -1296,14 +1511,16 @@ class VideoUploadManager extends ChangeNotifier {
     }
   }
 
-  Future<List<int>> _readChunk(File file, int offset, int length) async {
-    final handle = await file.open();
-    try {
-      await handle.setPosition(offset);
-      return await handle.read(length);
-    } finally {
-      await handle.close();
-    }
+  /// Progress line for one part. For links the step is named, because reading
+  /// from the link and pushing to Boxera are two separate network trips.
+  String _partDetail(
+    VideoUploadJob job,
+    int number,
+    int partCount,
+    String step,
+  ) {
+    final count = partCount > 0 ? 'بخش $number از $partCount' : 'بخش $number';
+    return job.isLink ? '$count • $step' : 'آپلود $count';
   }
 
   int _partLength(int number, int size, int partSize) {

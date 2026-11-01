@@ -618,7 +618,7 @@ class _HomePageState extends State<HomePage> {
         content: Text(
           added == 0
               ? 'لینک معتبر جدیدی در صف نبود (تکراری یا نامعتبر).'
-              : '$added لینک برای دانلود و آپلود اضافه شد؛ در تب آپلود صف را شروع کن.',
+              : '$added لینک برای انتقال تکه‌ای به Boxera اضافه شد؛ در تب آپلود صف را شروع کن.',
         ),
       ),
     );
@@ -1021,7 +1021,7 @@ class _HomePageState extends State<HomePage> {
       ),
       const SizedBox(height: 12),
       const Text(
-        'این صفحه فقط لینک‌ها را با درخواست HTTP HEAD بررسی می‌کند و خودش فایل را آپلود نمی‌کند. برای آپلود واقعی، با دکمه «ارسال لینک‌های صف به آپلود Boxera» لینک‌ها را به صف دانلود و آپلود بفرست و از تب «آپلود» شروع کن.\n\nبعضی سرورها درخواست HEAD را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. برای آپلود، لینک باید مستقیم به فایل ویدیویی برسد.',
+        'این صفحه فقط لینک‌ها را با درخواست HTTP HEAD بررسی می‌کند و خودش فایل را آپلود نمی‌کند. برای آپلود واقعی، با دکمه «ارسال لینک‌های صف به آپلود Boxera» لینک‌ها را به صف انتقال بفرست و از تب «آپلود» شروع کن؛ لینکی که پشتیبانی Range داشته باشد تکه‌تکه مستقیم به Boxera می‌رود و روی گوشی ذخیره نمی‌شود.\n\nبعضی سرورها درخواست HEAD را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. برای آپلود، لینک باید مستقیم به فایل ویدیویی برسد.',
         style: TextStyle(color: Colors.amber, fontSize: 12),
       ),
     ],
@@ -1156,17 +1156,28 @@ class _HomePageState extends State<HomePage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('آپلود از لینک'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          minLines: 3,
-          maxLines: 8,
-          keyboardType: TextInputType.multiline,
-          textDirection: TextDirection.ltr,
-          decoration: const InputDecoration(
-            hintText: 'https://example.com/movie.mp4\nهر لینک در یک خط',
-            alignLabelWithHint: true,
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'اگر لینک از Range پشتیبانی کند، ویدیو تکه‌تکه مستقیم به Boxera فرستاده می‌شود و هیچ فایلی روی گوشی ذخیره نمی‌شود.',
+              style: TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 8,
+              keyboardType: TextInputType.multiline,
+              textDirection: TextDirection.ltr,
+              decoration: const InputDecoration(
+                hintText: 'https://example.com/movie.mp4\nهر لینک در یک خط',
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -1189,7 +1200,7 @@ class _HomePageState extends State<HomePage> {
         content: Text(
           added == 0
               ? 'لینک معتبر جدیدی پیدا نشد (تکراری یا نامعتبر).'
-              : '$added لینک برای دانلود و آپلود اضافه شد.',
+              : '$added لینک برای انتقال به Boxera اضافه شد.',
         ),
       ),
     );
@@ -1493,7 +1504,7 @@ class _HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: 6),
         const Text(
-          'ویدیو را انتخاب کن یا لینک مستقیم بده؛ در حالت لینک، فایل اول در حافظه موقت گوشی دانلود می‌شود. بعد از آن به‌صورت چندبخشی به Boxera منتقل، ثبت و پردازش می‌شود و در پایان لینک M3U8 آماده است.',
+          'ویدیو را انتخاب کن یا لینک مستقیم بده؛ در حالت لینک، فایل تکه‌تکه از لینک خوانده و همان‌طور به Boxera فرستاده می‌شود و روی گوشی ذخیره نمی‌شود. فقط اگر لینک پشتیبانی Range نداشته باشد، برنامه ناچار می‌شود فایل را در حافظهٔ موقت دانلود کند. بعد از انتقال، ویدیو ثبت و پردازش می‌شود و در پایان لینک M3U8 آماده است.',
           style: TextStyle(color: Colors.white60),
         ),
         const SizedBox(height: 12),
@@ -1560,7 +1571,7 @@ class _HomePageState extends State<HomePage> {
         ...jobs.map(_jobCard),
         const SizedBox(height: 12),
         const Text(
-          'این بخش با API رسمی آپلود Boxera کار می‌کند: شروع آپلود، انتقال S3 چندبخشی یا TUS، ثبت رایگان ویدیو و پیگیری پردازش. فقط لینک غیرخالی M3U8 را برای مخاطب ذخیره کن؛ preview_url مخصوص پیش‌نمایش مالک است و ممکن است منقضی شود.\n\nاگر برنامه بسته شود، آپلود نیمه‌کاره با همان file_id ادامه پیدا می‌کند؛ فایل انتخاب‌شده باید در حافظه موقت برنامه باقی بماند. کانال پیش‌فرض ۴۳ (فیلم کیس) است و از تنظیمات قابل تغییر است.\n\nدر حالت لینک، آدرس باید مستقیم به فایل ویدیویی (mp4، mkv و...) برسد، نه صفحه پخش یا فهرست m3u8. فایل دانلودشده تا آماده‌شدن ویدیو در حافظه موقت می‌ماند و بعد حذف می‌شود؛ برای حجم زیاد، فضای خالی گوشی و مصرف اینترنت را در نظر بگیر.',
+          'این بخش با API رسمی آپلود Boxera کار می‌کند: شروع آپلود، انتقال S3 چندبخشی یا TUS، ثبت رایگان ویدیو و پیگیری پردازش. فقط لینک غیرخالی M3U8 را برای مخاطب ذخیره کن؛ preview_url مخصوص پیش‌نمایش مالک است و ممکن است منقضی شود.\n\nاگر برنامه بسته شود، آپلود نیمه‌کاره با همان file_id ادامه پیدا می‌کند؛ فایل انتخاب‌شده باید در حافظه موقت برنامه باقی بماند. کانال پیش‌فرض ۴۳ (فیلم کیس) است و از تنظیمات قابل تغییر است.\n\nدر حالت لینک، آدرس باید مستقیم به فایل ویدیویی (mp4، mkv و...) برسد، نه صفحه پخش یا فهرست m3u8. Boxera مسیری برای دریافت مستقیم لینک ندارد، پس بایت‌ها از گوشی تو عبور می‌کند؛ اما در حالت تکه‌ای (Range) هیچ فایلی روی گوشی ذخیره نمی‌شود و فقط یک بخش زیر ۸ مگابایت در حافظه می‌ماند. اگر لینک Range پشتیبانی نکند، فایل کامل در حافظهٔ موقت دانلود می‌شود و بعد از آماده‌شدن ویدیو حذف می‌گردد.',
           style: TextStyle(color: Colors.amber, fontSize: 12),
         ),
       ],
