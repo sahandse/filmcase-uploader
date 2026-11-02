@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'boxera_api.dart';
 import 'connection_diagnostics_page.dart';
+import 'import_service.dart';
 import 'upload_manager.dart';
 
 void main() => runApp(const FilmcaseUploaderApp());
@@ -84,9 +85,16 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   static const _secure = FlutterSecureStorage();
   late final VideoUploadManager uploads;
+  final imports = ImportDelegate();
   String apiBase = 'https://boxera.ir/api';
   String token = '';
   String channelId = '43';
+  String importBase = '';
+  String importToken = '';
+  String movieFolderId = '27576';
+  String seriesFolderId = '27577';
+  String? importHealthText;
+  bool importHealthBusy = false;
   bool publicVideo = false;
   bool? canUpload;
   bool? idempotentInit;
@@ -115,6 +123,7 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     uploads = VideoUploadManager()..addListener(_onUploadsChanged);
+    imports.addListener(_onUploadsChanged);
     _load();
   }
 
@@ -122,9 +131,14 @@ class _HomePageState extends State<HomePage> {
     if (mounted) setState(() {});
   }
 
+  ImportService _importService() =>
+      ImportService(baseUrl: importBase, token: importToken);
+
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     final savedToken = await _secure.read(key: 'boxera_upload_token') ?? '';
+    final savedImportToken =
+        await _secure.read(key: 'import_server_token') ?? '';
     await uploads.load();
     if (!mounted) return;
     setState(() {
@@ -134,6 +148,10 @@ class _HomePageState extends State<HomePage> {
           ? 'تنظیم نشده'
           : 'توکن ذخیره شده؛ اتصال در این اجرا بررسی نشده';
       channelId = p.getString('channelId') ?? '43';
+      importBase = p.getString('importBase') ?? '';
+      importToken = savedImportToken;
+      movieFolderId = p.getString('movieFolderId') ?? '27576';
+      seriesFolderId = p.getString('seriesFolderId') ?? '27577';
       publicVideo = p.getBool('publicVideo') ?? false;
       maxConcurrent = p.getInt('maxConcurrent') ?? 2;
       maxConcurrentUploads = p.getInt('maxConcurrentUploads') ?? 2;
@@ -153,6 +171,8 @@ class _HomePageState extends State<HomePage> {
         } catch (_) {}
       }
     });
+    await imports.load();
+    imports.currentService = _importService();
   }
 
   Future<void> _save() async {
@@ -164,6 +184,14 @@ class _HomePageState extends State<HomePage> {
       await _secure.write(key: 'boxera_upload_token', value: token);
     }
     await p.setString('channelId', channelId);
+    await p.setString('importBase', importBase);
+    if (importToken.isEmpty) {
+      await _secure.delete(key: 'import_server_token');
+    } else {
+      await _secure.write(key: 'import_server_token', value: importToken);
+    }
+    await p.setString('movieFolderId', movieFolderId);
+    await p.setString('seriesFolderId', seriesFolderId);
     await p.setBool('publicVideo', publicVideo);
     await p.setInt('maxConcurrent', maxConcurrent);
     await p.setInt('maxConcurrentUploads', maxConcurrentUploads);
@@ -400,6 +428,10 @@ class _HomePageState extends State<HomePage> {
     final api = TextEditingController(text: apiBase);
     final tok = TextEditingController(text: token);
     final chan = TextEditingController(text: channelId);
+    final impApi = TextEditingController(text: importBase);
+    final impTok = TextEditingController(text: importToken);
+    final impMovie = TextEditingController(text: movieFolderId);
+    final impSeries = TextEditingController(text: seriesFolderId);
     var localConcurrent = maxConcurrent;
     var localUploadConcurrent = maxConcurrentUploads;
     var localBatch = maxBatch;
@@ -497,6 +529,54 @@ class _HomePageState extends State<HomePage> {
                   value: localPublic,
                   onChanged: (v) => refresh(() => localPublic = v),
                 ),
+                const SizedBox(height: 14),
+                const Text(
+                  'سرور بارگذاری از لینک (اختیاری)',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: impApi,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'آدرس سرور import',
+                    hintText: 'http://10.0.0.5:8787 یا https://import.example',
+                    helperText:
+                        'خالی بگذار تا لینک‌ها فقط از طریق گوشی منتقل شوند. با سرور، لینک را خودِ سرور می‌خواند و اینترنت و حافظهٔ گوشی اصلاً درگیر نمی‌شود.',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: impTok,
+                  obscureText: obscure,
+                  decoration: const InputDecoration(
+                    labelText: 'توکن سرور import (IMPORT_TOKEN)',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: impMovie,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'شناسهٔ فولدر فیلم',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: impSeries,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'شناسهٔ فولدر سریال',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 8),
                 const Text(
                   'توکن شخصی در فضای امن Android ذخیره می‌شود. اعتبار آن با مسیر واقعی /auth/me بررسی می‌شود. نگهداری توکن در موبایل برخلاف توصیه امنیتی Boxera برای ذخیره توکن فقط روی سرور است.',
@@ -509,6 +589,11 @@ class _HomePageState extends State<HomePage> {
                       apiBase = api.text.trim();
                       token = tok.text.trim();
                       channelId = chan.text.trim();
+                      importBase = impApi.text.trim();
+                      importToken = impTok.text.trim();
+                      movieFolderId = impMovie.text.trim();
+                      seriesFolderId = impSeries.text.trim();
+                      importHealthText = null;
                       publicVideo = localPublic;
                       maxConcurrent = localConcurrent;
                       maxConcurrentUploads = localUploadConcurrent;
@@ -520,6 +605,7 @@ class _HomePageState extends State<HomePage> {
                       verifiedAt = null;
                       connectionState = 'تنظیمات ذخیره شد؛ آماده بررسی اتصال';
                     });
+                    imports.currentService = _importService();
                     await _save();
                     if (ctx.mounted) Navigator.pop(ctx);
                     await _validateConnection();
@@ -624,6 +710,313 @@ class _HomePageState extends State<HomePage> {
     );
     if (added > 0) setState(() => selectedNav = 2);
   }
+
+  Future<void> _checkImportServer() async {
+    final service = _importService();
+    if (!service.isConfigured) {
+      setState(
+        () => importHealthText = 'آدرس سرور import در تنظیمات وارد نشده است.',
+      );
+      return;
+    }
+    setState(() {
+      importHealthBusy = true;
+      importHealthText = 'در حال درخواست /health از سرور...';
+    });
+    try {
+      final health = await service.health();
+      if (!mounted) return;
+      setState(() {
+        importHealthText =
+            'سرور پاسخ داد • Boxera توکن روی سرور ${health.hasBoxeraToken ? 'تنظیم است' : 'تنظیم نیست'} • صف: ${health.running} در حال اجرا، ${health.pending} در انتظار';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(
+        () => importHealthText = 'سرور پاسخ نداد: ${describeError(error)}',
+      );
+    } finally {
+      if (mounted) setState(() => importHealthBusy = false);
+    }
+  }
+
+  Future<void> _delegateToServer(
+    List<String> urls, {
+    required String kind,
+    int? folderId,
+    int? channelId,
+  }) async {
+    final service = _importService();
+    if (!service.isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'ابتدا آدرس سرور import را در تنظیمات وارد کن؛ بدون سرور، لینک فقط از طریق گوشی منتقل می‌شود.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (urls.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لینکی برای سپردن به سرور وجود ندارد.')),
+      );
+      return;
+    }
+    final pending = urls
+        .where((url) => !(imports.forUrl(url)?.isSucceeded ?? false))
+        .toList();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${pending.length} لینک به سرور سپرده می‌شود؛ نتیجه همین‌جا تازه می‌شود.',
+        ),
+      ),
+    );
+    await imports.delegate(
+      service: service,
+      urls: pending,
+      kind: kind,
+      folderId: folderId,
+      channelId: channelId,
+    );
+  }
+
+  Future<void> _delegateChooser(List<String> urls) async {
+    var destination = 'movie';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, refresh) => AlertDialog(
+          title: const Text('سپردن لینک‌ها به سرور'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'سرور لینک را خودش می‌خواند و به Boxera می‌فرستد؛ نه روی گوشی ذخیره می‌شود و نه از اینترنت گوشی بایتی مصرف می‌شود.',
+                style: TextStyle(fontSize: 12, color: Colors.white70),
+              ),
+              const SizedBox(height: 10),
+              RadioGroup<String>(
+                groupValue: destination,
+                onChanged: (v) => refresh(() => destination = v ?? destination),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    RadioListTile<String>(
+                      value: 'movie',
+                      title: Text(
+                        'فایل در فولدر فیلم (folder_id $movieFolderId)',
+                      ),
+                    ),
+                    RadioListTile<String>(
+                      value: 'series',
+                      title: Text(
+                        'فایل در فولدر سریال (folder_id $seriesFolderId)',
+                      ),
+                    ),
+                    RadioListTile<String>(
+                      value: 'video',
+                      title: Text('ویدیوی Boxera در کانال $channelId'),
+                      subtitle: const Text(
+                        'بعد از تبدیل، لینک M3U8 در همین فهرست نمایش داده می‌شود.',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('انصراف'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('سپردن'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    switch (destination) {
+      case 'movie':
+        await _delegateToServer(
+          urls,
+          kind: 'drive',
+          folderId: int.tryParse(movieFolderId),
+        );
+      case 'series':
+        await _delegateToServer(
+          urls,
+          kind: 'drive',
+          folderId: int.tryParse(seriesFolderId),
+        );
+      default:
+        await _delegateToServer(
+          urls,
+          kind: 'video',
+          channelId: int.tryParse(channelId),
+        );
+    }
+  }
+
+  Widget _importTaskTile(ImportTask task) => Card(
+    color: panel,
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            task.url,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textDirection: TextDirection.ltr,
+            style: const TextStyle(fontSize: 12, color: Colors.white70),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '${task.stateLabel} • ${task.kind == 'drive' ? 'فایل در فولدر ${task.folderId ?? '-'}' : 'ویدیوی Boxera'}',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+          if (task.detail.isNotEmpty)
+            Text(
+              task.detail,
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+          if (task.size > 0) ...[
+            const SizedBox(height: 6),
+            LinearProgressIndicator(
+              value: task.progress.clamp(0, 1).toDouble(),
+              minHeight: 5,
+              color: orange,
+              backgroundColor: const Color(0xFF2A2E34),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${bytesText(task.uploadedBytes)} از ${bytesText(task.size)}'
+              '${task.error == null ? '' : '\n${task.error}'}',
+              style: TextStyle(
+                color: task.error == null ? Colors.white54 : Colors.redAccent,
+                fontSize: 12,
+              ),
+            ),
+          ] else if (task.error != null)
+            Text(
+              task.error!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+            ),
+          if (task.m3u8Url != null) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.play_circle_outline, color: orange, size: 18),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    task.m3u8Url!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textDirection: TextDirection.ltr,
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 18),
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: task.m3u8Url!));
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('لینک M3U8 کپی شد.')),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ],
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TextButton(
+              onPressed: () => imports.forget(task),
+              child: const Text('حذف از فهرست سرور'),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _importServerCard() => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: panel,
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.dns_outlined, color: orange),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'بارگذاری با سرور (بدون اینترنت گوشی)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+            ),
+            if (imports.currentService?.isConfigured ?? false)
+              IconButton(
+                icon: const Icon(Icons.refresh, size: 20),
+                onPressed: imports.refreshing
+                    ? null
+                    : () => imports.refresh(_importService()),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          importBase.isEmpty
+              ? 'آدرس سرور وارد نشده است. راهنمای اجرای سرور در README و فایل tools/boxera-link-importer.mjs آمده؛ بعد از اجرا آدرس و توکن آن را در تنظیمات وارد کن.'
+              : 'سرور: $importBase',
+          style: const TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+        if (importHealthText != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              importHealthText!,
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: importHealthBusy ? null : _checkImportServer,
+              icon: const Icon(Icons.network_check, size: 18),
+              label: const Text('تست سرور'),
+            ),
+            FilledButton.icon(
+              onPressed: items.isEmpty
+                  ? null
+                  : () => _delegateChooser(items.map((e) => e.url).toList()),
+              icon: const Icon(Icons.cloud_outlined, size: 18),
+              label: const Text('سپردن لینک‌های فهرست به سرور'),
+            ),
+          ],
+        ),
+        ...imports.tasks.map(_importTaskTile),
+      ],
+    ),
+  );
 
   Future<void> _deleteFolder(String name) async {
     if (name == 'ریشه') return;
@@ -1020,6 +1413,8 @@ class _HomePageState extends State<HomePage> {
         style: const TextStyle(fontWeight: FontWeight.bold),
       ),
       const SizedBox(height: 12),
+      _importServerCard(),
+      const SizedBox(height: 12),
       const Text(
         'این صفحه فقط لینک‌ها را با درخواست HTTP HEAD بررسی می‌کند و خودش فایل را آپلود نمی‌کند. برای آپلود واقعی، با دکمه «ارسال لینک‌های صف به آپلود Boxera» لینک‌ها را به صف انتقال بفرست و از تب «آپلود» شروع کن؛ لینکی که پشتیبانی Range داشته باشد تکه‌تکه مستقیم به Boxera می‌رود و روی گوشی ذخیره نمی‌شود.\n\nبعضی سرورها درخواست HEAD را نمی‌پذیرند یا حجم را اعلام نمی‌کنند؛ در این حالت حجم نامشخص می‌ماند. برای آپلود، لینک باید مستقیم به فایل ویدیویی برسد.',
         style: TextStyle(color: Colors.amber, fontSize: 12),
@@ -1089,9 +1484,11 @@ class _HomePageState extends State<HomePage> {
               textDirection: TextDirection.ltr,
             ),
             subtitle: Text(
-              '${item.folder} • ${item.status}\nحجم: ${bytesText(item.sizeBytes)}${item.error == null ? '' : ' • ${item.error}'}',
+              '${item.folder} • ${item.status}'
+              '${imports.forUrl(item.url) == null ? '' : '\nسرور: ${imports.forUrl(item.url)!.stateLabel}'}\n'
+              'حجم: ${bytesText(item.sizeBytes)}${item.error == null ? '' : ' • ${item.error}'}',
               style: const TextStyle(color: Colors.white60),
-              maxLines: 3,
+              maxLines: 4,
             ),
             isThreeLine: true,
             trailing: PopupMenuButton<String>(
@@ -1101,6 +1498,7 @@ class _HomePageState extends State<HomePage> {
                 if (v == 'check') _checkItems([item]);
                 if (v == 'copy') _copyLink(item);
                 if (v == 'duplicate') _duplicateItem(item);
+                if (v == 'server') _delegateChooser([item.url]);
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'check', child: Text('بررسی لینک')),
@@ -1108,6 +1506,10 @@ class _HomePageState extends State<HomePage> {
                 PopupMenuItem(
                   value: 'duplicate',
                   child: Text('افزودن نسخه در صف'),
+                ),
+                PopupMenuItem(
+                  value: 'server',
+                  child: Text('سپردن به سرور import'),
                 ),
                 PopupMenuItem(value: 'move', child: Text('انتقال به دسته')),
                 PopupMenuItem(value: 'delete', child: Text('حذف از فهرست')),

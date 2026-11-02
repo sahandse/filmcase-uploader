@@ -46,6 +46,17 @@ jobs:
       - name: Analyze Dart and Flutter code
         run: flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
 
+      - name: Run unit tests
+        run: flutter test --no-pub
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Self-test the server-side link importer
+        run: node tools/import_server_selftest.mjs
+
       - name: Build release APK
         run: flutter build apk --release --no-pub
 
