@@ -805,7 +805,7 @@ class _HomePageState extends State<HomePage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'سرور لینک را خودش می‌خواند و به Boxera می‌فرستد؛ نه روی گوشی ذخیره می‌شود و نه از اینترنت گوشی بایتی مصرف می‌شود.',
+                'سرور لینک را خودش می‌خواند و به Boxera می‌فرستد؛ بایت‌های ویدیو روی گوشی ذخیره نمی‌شوند و از اینترنت گوشی عبور نمی‌کنند. فقط چند درخواست کوتاه برای ثبت و پرسیدن وضعیت با دادهٔ گوشی فرستاده می‌شود.',
                 style: TextStyle(fontSize: 12, color: Colors.white70),
               ),
               const SizedBox(height: 10),
