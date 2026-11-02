@@ -151,8 +151,14 @@ class ImportHealth {
 
 class ImportService {
   ImportService({required String baseUrl, String token = ''})
-    : baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), ''),
+    : baseUrl = _normalize(baseUrl),
       token = token.trim();
+
+  static String _normalize(String value) {
+    final trimmed = value.trim().replaceAll(RegExp(r'/+$'), '');
+    if (trimmed.isEmpty) return trimmed;
+    return trimmed.contains('://') ? trimmed : 'http://$trimmed';
+  }
 
   final String baseUrl;
   final String token;
@@ -360,7 +366,11 @@ class ImportDelegate extends ChangeNotifier {
       tasks.insert(0, next);
       return;
     }
-    tasks[index] = tasks[index].mergedWith(next);
+    // A different id means the server started a new task for the same link, so
+    // the previous answer (including its error) no longer describes it.
+    tasks[index] = tasks[index].id == next.id
+        ? tasks[index].mergedWith(next)
+        : next;
   }
 
   Future<void> refresh(ImportService service) async {

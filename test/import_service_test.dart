@@ -79,4 +79,16 @@ void main() {
       'aborting',
     );
   });
+
+  test('a host typed without a scheme still parses', () {
+    expect(
+      ImportService(baseUrl: '10.0.0.5:8787/').baseUrl,
+      'http://10.0.0.5:8787',
+    );
+    expect(
+      ImportService(baseUrl: 'https://import.example/').baseUrl,
+      'https://import.example',
+    );
+    expect(ImportService(baseUrl: '').isConfigured, isFalse);
+  });
 }
