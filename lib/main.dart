@@ -783,6 +783,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _delegateChooser(List<String> urls) async {
+    if (!_importService().isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'ابتدا آدرس سرور import را در تنظیمات وارد کن؛ بدون سرور، لینک فقط از طریق گوشی منتقل می‌شود.',
+          ),
+        ),
+      );
+      _showSettings();
+      return;
+    }
     var destination = 'movie';
     final confirmed = await showDialog<bool>(
       context: context,
