@@ -224,6 +224,113 @@ class ProcessingInfo {
   }
 }
 
+/// Boxera keeps every management id as an integer, but the app carries them as
+/// strings (that is how they arrive and how they persist), so they are sent
+/// back in the type the endpoint declares.
+Object managementId(String value) {
+  final text = value.trim();
+  return int.tryParse(text) ?? text;
+}
+
+/// Container of a file name, limited to the mimes Boxera transcodes.
+String videoMimeType(String name) {
+  final dot = name.lastIndexOf('.');
+  final extension = dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
+  switch (extension) {
+    case 'mp4':
+    case 'm4v':
+      return 'video/mp4';
+    case 'mkv':
+      return 'video/x-matroska';
+    case 'mov':
+      return 'video/quicktime';
+    case 'avi':
+      return 'video/x-msvideo';
+    case 'webm':
+    case 'vp9':
+      return 'video/webm';
+    case 'ts':
+    case 'm2ts':
+      return 'video/mp2t';
+    case 'flv':
+      return 'video/x-flv';
+    case 'wmv':
+      return 'video/x-ms-wmv';
+    case 'mpg':
+    case 'mpeg':
+      return 'video/mpeg';
+    case '3gp':
+      return 'video/3gpp';
+    case 'ogv':
+      return 'video/ogg';
+    default:
+      return 'video/mp4';
+  }
+}
+
+/// `space=video` rejects a mime that does not start with `video/`, so a server
+/// answering `application/octet-stream` for a clip still uploads it.
+String videoMimeTypeFor(String name, String declared) {
+  final type = declared.split(';').first.trim().toLowerCase();
+  if (type.startsWith('video/') && type.length > 'video/'.length) return type;
+  return videoMimeType(name);
+}
+
+String clipText(String value, int maxLength) =>
+    value.length <= maxLength ? value : value.substring(0, maxLength);
+
+const _minPartSize = 524288;
+const _maxPartSize = 5368709120;
+const _maxParts = 10000;
+
+/// Part size Boxera accepts for one file: inside its byte window and never
+/// more than 10000 sections, which needs a bigger part for a huge file.
+int suggestedPartSize(int sizeBytes) {
+  const defaultPartSize = 8 * 1024 * 1024;
+  if (sizeBytes <= defaultPartSize * _maxParts) return defaultPartSize;
+  final needed = (sizeBytes / _maxParts).ceil();
+  final rounded = (needed / _minPartSize).ceil() * _minPartSize;
+  return rounded.clamp(_minPartSize, _maxPartSize);
+}
+
+Map<String, dynamic> uploadInitBody({
+  required String originalName,
+  required String mimeType,
+  required int sizeBytes,
+  required String requestId,
+  int? channelId,
+  String? fileId,
+  int? partSize,
+}) => {
+  'space': 'video',
+  'original_name': clipText(originalName, 255),
+  'mime_type': videoMimeTypeFor(originalName, mimeType),
+  'size_bytes': sizeBytes,
+  'upload_request_id': clipText(requestId, 120),
+  if (partSize != null) 'part_size': partSize,
+  if (channelId != null) 'channel_id': channelId,
+  if (fileId != null && fileId.trim().isNotEmpty)
+    'file_id': managementId(fileId),
+};
+
+Map<String, dynamic> videoRegisterBody({
+  required String mediaFileId,
+  required String title,
+  required String requestId,
+  int? channelId,
+  String? description,
+  String visibility = 'unlisted',
+}) => {
+  'media_file_id': managementId(mediaFileId),
+  'title': clipText(title, 255),
+  'upload_request_id': clipText(requestId, 120),
+  'visibility': visibility,
+  'access_type': 'free',
+  if (channelId != null) 'channel_id': channelId,
+  if (description != null && description.trim().isNotEmpty)
+    'description': description.trim(),
+};
+
 class BoxeraApi {
   BoxeraApi({required String baseUrl, required String token})
     : baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), ''),
@@ -308,16 +415,15 @@ class BoxeraApi {
     final data = await _send(
       'POST',
       '/uploads/init',
-      body: {
-        'space': 'video',
-        'original_name': originalName,
-        'mime_type': mimeType,
-        'size_bytes': sizeBytes,
-        'upload_request_id': requestId,
-        if (partSize != null) 'part_size': partSize,
-        if (channelId != null) 'channel_id': channelId,
-        if (fileId != null && fileId.isNotEmpty) 'file_id': fileId,
-      },
+      body: uploadInitBody(
+        originalName: originalName,
+        mimeType: mimeType,
+        sizeBytes: sizeBytes,
+        requestId: requestId,
+        channelId: channelId,
+        fileId: fileId,
+        partSize: partSize,
+      ),
     );
     final session = UploadSession.fromJson(data);
     if (session.id.isEmpty) {
@@ -356,7 +462,7 @@ class BoxeraApi {
         'attempt': attempt,
         'status': status,
         if (message != null && message.isNotEmpty)
-          'message': message.length > 255 ? message.substring(0, 255) : message,
+          'message': clipText(message, 255),
         if (etag != null) 'etag': etag,
         if (size != null) 'size': size,
       },
@@ -391,16 +497,14 @@ class BoxeraApi {
     final data = await _send(
       'POST',
       '/video/videos',
-      body: {
-        'media_file_id': mediaFileId,
-        'title': title,
-        'upload_request_id': requestId,
-        'visibility': visibility,
-        'access_type': 'free',
-        if (channelId != null) 'channel_id': channelId,
-        if (description != null && description.trim().isNotEmpty)
-          'description': description.trim(),
-      },
+      body: videoRegisterBody(
+        mediaFileId: mediaFileId,
+        title: title,
+        requestId: requestId,
+        channelId: channelId,
+        description: description,
+        visibility: visibility,
+      ),
     );
     final video = mapOf(data['video']);
     return nullableTextOf(video['id']) ??

@@ -10,8 +10,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'boxera_api.dart';
 
-const _defaultPartSize = 8 * 1024 * 1024;
-
 bool isHttpLink(String value) {
   final uri = Uri.tryParse(value.trim());
   return uri != null &&
@@ -257,41 +255,6 @@ int? channelIdOf(String? value) {
   final text = value?.trim() ?? '';
   if (text.isEmpty) return null;
   return int.tryParse(text);
-}
-
-String videoMimeType(String name) {
-  final dot = name.lastIndexOf('.');
-  final extension = dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
-  switch (extension) {
-    case 'mp4':
-    case 'm4v':
-      return 'video/mp4';
-    case 'mkv':
-      return 'video/x-matroska';
-    case 'mov':
-      return 'video/quicktime';
-    case 'avi':
-      return 'video/x-msvideo';
-    case 'webm':
-    case 'vp9':
-      return 'video/webm';
-    case 'ts':
-    case 'm2ts':
-      return 'video/mp2t';
-    case 'flv':
-      return 'video/x-flv';
-    case 'wmv':
-      return 'video/x-ms-wmv';
-    case 'mpg':
-    case 'mpeg':
-      return 'video/mpeg';
-    case '3gp':
-      return 'video/3gpp';
-    case 'ogv':
-      return 'video/ogg';
-    default:
-      return 'video/mp4';
-  }
 }
 
 String defaultVideoTitle(String name) {
@@ -787,18 +750,37 @@ class VideoUploadManager extends ChangeNotifier {
         job.progress = 0;
       }
       _checkCancelled(job);
-      final requestId = job.requestId ?? _newId('upload');
+      var requestId = job.requestId ?? _newId('upload');
       job.requestId = requestId;
       await persist();
-      final session = await api.initUpload(
-        originalName: job.name,
-        mimeType: job.mimeType,
-        sizeBytes: job.size,
-        requestId: requestId,
-        channelId: channelIdOf(channelId),
-        fileId: job.fileId,
-        partSize: job.partSize ?? _defaultPartSize,
-      );
+      UploadSession session;
+      for (var attempt = 0; ; attempt++) {
+        try {
+          session = await api.initUpload(
+            originalName: job.name,
+            mimeType: job.mimeType,
+            sizeBytes: job.size,
+            requestId: requestId,
+            channelId: channelIdOf(channelId),
+            fileId: job.fileId,
+            partSize: job.partSize ?? suggestedPartSize(job.size),
+          );
+          break;
+        } on BoxeraException catch (error) {
+          // A 409 is an expired session or a key whose input no longer
+          // matches; the documented continuation is the same file id with a
+          // fresh key.
+          if (error.statusCode != 409 || attempt >= 2 || job.fileId == null) {
+            rethrow;
+          }
+          requestId = _newId('upload');
+          job.requestId = requestId;
+          job.sessionId = null;
+          await persist();
+          job.detail = 'نشست پیشین پذیرفته نشد؛ ساخت نشست تازه برای همان فایل';
+          notifyListeners();
+        }
+      }
       _checkCancelled(job);
       job.sessionId = session.id;
       job.protocol = session.protocol;
@@ -810,9 +792,12 @@ class VideoUploadManager extends ChangeNotifier {
       notifyListeners();
       await persist();
       if (session.uploadStatus == 'completed') {
+        // The bytes are already on the file, so nothing is read again; only
+        // complete is repeated to get the file id back.
         job.uploadedBytes = job.size;
         job.progress = 1;
         notifyListeners();
+        await _complete(job, api, const []);
         await _registerAndPoll(job, api, channelId, publicVideo);
         return;
       }
@@ -1162,7 +1147,7 @@ class VideoUploadManager extends ChangeNotifier {
   ) async {
     final partSize = session.partSize > 0
         ? session.partSize
-        : (job.partSize ?? _defaultPartSize);
+        : (job.partSize ?? suggestedPartSize(job.size));
     final partCount = session.partCount > 0
         ? session.partCount
         : (job.size / partSize).ceil();
@@ -1329,7 +1314,7 @@ class VideoUploadManager extends ChangeNotifier {
     }
     final partSize = session.partSize > 0
         ? session.partSize
-        : (job.partSize ?? _defaultPartSize);
+        : (job.partSize ?? suggestedPartSize(job.size));
     final totalParts = (job.size / partSize).ceil();
     while (offset < job.size) {
       _checkCancelled(job);

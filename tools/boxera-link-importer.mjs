@@ -21,11 +21,18 @@ import dns from 'node:dns/promises';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const API_BASE = (process.env.BOXERA_API_BASE || 'https://boxera.ir/api')
   .replace(/\/+$/, '');
 const TOKEN = (process.env.BOXERA_API_TOKEN || '').trim();
 const PART_SIZE = Number(process.env.BOXERA_PART_SIZE || 8 * 1024 * 1024);
+// Boxera's own multipart limits, copied from the upload guide: the part size we
+// send is only a suggestion, but it has to be inside this window and must not
+// push the file over the part count the server is willing to track.
+const MIN_PART_SIZE = 524288;
+const MAX_PART_SIZE = 5368709120;
+const MAX_PARTS = 10000;
 const STATE_DIR =
   process.env.IMPORT_STATE_DIR || path.join(os.tmpdir(), 'boxera-link-importer');
 const ALLOW_PRIVATE = process.env.IMPORT_ALLOW_PRIVATE === '1';
@@ -43,7 +50,32 @@ function log(...args) {
   console.log(new Date().toISOString(), ...args);
 }
 
-class ImportError extends Error {}
+class ImportError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function assertPartSize() {
+  if (
+    !Number.isInteger(PART_SIZE) ||
+    PART_SIZE < MIN_PART_SIZE ||
+    PART_SIZE > MAX_PART_SIZE
+  ) {
+    throw new ImportError(
+      `BOXERA_PART_SIZE باید عدد صحیح بایت بین ${MIN_PART_SIZE} و ${MAX_PART_SIZE} باشد (مقدار فعلی: ${process.env.BOXERA_PART_SIZE}).`,
+    );
+  }
+}
+
+function suggestPartSize(size) {
+  if (Math.ceil(size / PART_SIZE) <= MAX_PARTS) return PART_SIZE;
+  return Math.min(
+    Math.ceil(size / MAX_PARTS / MIN_PART_SIZE) * MIN_PART_SIZE,
+    MAX_PART_SIZE,
+  );
+}
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -226,7 +258,10 @@ async function callBoxera(method, apiPath, body) {
   if (!response.ok) {
     const message =
       json?.message || json?.data?.message || `Boxera answered ${response.status}.`;
-    throw new ImportError(`${message} (${method} ${apiPath} -> ${response.status})`);
+    throw new ImportError(
+      `${message} (${method} ${apiPath} -> ${response.status})`,
+      response.status,
+    );
   }
   return unwrap(json);
 }
@@ -272,6 +307,7 @@ async function storageSend(sessionId, part, bytes) {
       }
       lastError = new ImportError(
         `Storage rejected part ${part.part_number} (${response.status}).`,
+        response.status,
       );
     } catch (error) {
       lastError = error;
@@ -402,10 +438,35 @@ function makeReporter(task) {
 
 // ---------- import ----------
 
+function videoKeyFor(fileId) {
+  // Derived from the file, not the task: re-running the same command replays
+  // the same registration, while a genuinely new file cannot collide with it.
+  return `video-${createHash('sha256').update(String(fileId)).digest('hex').slice(0, 32)}`;
+}
+
+function applyProbedInput(task, meta) {
+  if (!task.requestId) {
+    task.requestId = `import-${task.id}`;
+    return;
+  }
+  if (
+    task.size === meta.size &&
+    task.name === meta.name &&
+    task.mimeType === meta.mimeType
+  ) {
+    return;
+  }
+  // Boxera replays an init by upload_request_id, so a key already used with a
+  // different name, mime or size must not be reused; the file continues under
+  // a fresh key with the old file_id.
+  task.requestId = `import-${randomUUID()}`;
+  task.parts = new Map();
+}
+
 async function runImport(task, report) {
   report({ state: 'probing', detail: 'خواندن اطلاعات لینک' });
   const meta = await probeLink(task.url);
-  task.requestId = task.requestId || `import-${task.id}`;
+  applyProbedInput(task, meta);
   report({
     state: 'init',
     detail: 'ساخت نشست آپلود در Boxera',
@@ -415,17 +476,130 @@ async function runImport(task, report) {
     requestId: task.requestId,
   });
 
+  // Every call after an expired session answers 409. The parts the server
+  // already accepted stay on the file, so one fresh session is enough.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await runSession(task, meta, report);
+      break;
+    } catch (error) {
+      if (error?.status !== 409 || attempt >= 2 || !task.fileId) throw error;
+      task.requestId = `import-${randomUUID()}`;
+      task.sessionId = null;
+      report({
+        state: 'init',
+        detail: 'نشست پیشین پذیرفته نشد؛ ساخت نشست تازه برای همان فایل',
+      });
+    }
+  }
+
+  if (!task.fileId) throw new ImportError('Boxera did not return a file id.');
+
+  if (task.kind === 'drive') {
+    report({
+      state: 'ready',
+      fileId: task.fileId,
+      uploadedBytes: task.size,
+      progress: 1,
+      detail: 'فایل در فولدر Drive آماده شد',
+    });
+    return { state: 'ready', m3u8Url: null };
+  }
+
+  report({
+    state: 'registering',
+    uploadedBytes: task.size,
+    progress: 1,
+    detail: 'ثبت ویدیو در Boxera',
+  });
+  const video = await callBoxera('POST', '/video/videos', {
+    media_file_id: asId(task.fileId),
+    title: task.title || task.name,
+    upload_request_id: videoKeyFor(task.fileId),
+    visibility: 'unlisted',
+    access_type: 'free',
+    ...(task.channelId ? { channel_id: Number(task.channelId) } : {}),
+  });
+  const videoId = video.video?.id || video.video_id || video.id;
+  if (!videoId) throw new ImportError('Boxera did not return a video id.');
+  report({
+    state: 'processing',
+    videoId: String(videoId),
+    detail: 'در انتظار تبدیل ویدیو',
+  });
+
+  const deadline = Date.now() + Math.max(0, Number(task.waitSeconds || 0)) * 1000;
+  for (;;) {
+    const info = await callBoxera(
+      'GET',
+      `/video/videos/${encodeURIComponent(String(videoId))}/processing`,
+    );
+    const playback = info.playback || {};
+    const shareUrl = playback.share_url || playback.m3u8_url || info.m3u8_url || null;
+    const percent = info.transcode?.progress?.percent ?? null;
+    report({
+      state: info.state || 'processing',
+      m3u8Url: shareUrl,
+      previewUrl: playback.url || playback.preview_url || info.preview_url || null,
+      detail:
+        info.state === 'ready'
+          ? 'آماده پخش'
+          : `در حال پردازش${percent == null ? '' : ` ${percent}%`}`,
+    });
+    if (
+      info.state === 'ready' ||
+      info.state === 'failed' ||
+      info.state === 'unavailable'
+    ) {
+      return { state: info.state, m3u8Url: shareUrl };
+    }
+    if (Date.now() > deadline) return { state: 'pending', m3u8Url: shareUrl };
+    const rawPoll = Number(info.poll_after_seconds);
+    const waitSeconds = Number.isFinite(rawPoll) && rawPoll >= 0 ? rawPoll : 5;
+    await new Promise((done) => setTimeout(done, waitSeconds * 1000));
+  }
+}
+
+// Boxera rejects a video upload whose mime_type does not begin with video/, so
+// a link served as application/octet-stream is named after its container.
+function videoMimeFor(name, mimeType) {
+  if (String(mimeType || '').startsWith('video/')) return mimeType;
+  const extension = String(name || '').split('.').pop()?.toLowerCase() || '';
+  const byExtension = {
+    mkv: 'video/x-matroska',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    avi: 'video/x-msvideo',
+    m4v: 'video/x-m4v',
+    ts: 'video/mp2t',
+    mpg: 'video/mpeg',
+    mpeg: 'video/mpeg',
+    flv: 'video/x-flv',
+    '3gp': 'video/3gpp',
+    ogv: 'video/ogg',
+  };
+  return byExtension[extension] || 'video/mp4';
+}
+
+// File, session and video ids are numbers in this API.
+function asId(value) {
+  const text = String(value ?? '').trim();
+  return /^-?\d+$/.test(text) ? Number(text) : value;
+}
+
+async function runSession(task, meta, report) {
   const initBody = {
     space: task.kind === 'drive' ? 'drive' : 'video',
-    original_name: meta.name,
-    mime_type: meta.mimeType,
+    original_name: String(meta.name).slice(0, 255),
+    mime_type:
+      task.kind === 'drive' ? meta.mimeType : videoMimeFor(meta.name, meta.mimeType),
     size_bytes: meta.size,
     upload_request_id: task.requestId,
-    part_size: PART_SIZE,
+    part_size: suggestPartSize(meta.size),
   };
   if (task.kind === 'drive' && task.folderId) initBody.folder_id = Number(task.folderId);
   if (task.kind === 'video' && task.channelId) initBody.channel_id = Number(task.channelId);
-  if (task.fileId) initBody.file_id = task.fileId;
+  if (task.fileId) initBody.file_id = asId(task.fileId);
 
   const session = await callBoxera('POST', '/uploads/init', initBody);
   const sessionId = String(session.upload_session_id || '');
@@ -443,7 +617,18 @@ async function runImport(task, report) {
   });
 
   if (String(session.upload_status || '') === 'completed') {
-    task.fileId = session.file_id || task.fileId;
+    // completed means the bytes already sit on the file: no range is read
+    // again, only complete is repeated to get the file id back.
+    report({
+      state: 'completing',
+      detail: 'دریافت فایل از نشستی که کامل شده بود',
+      uploadedBytes: task.size,
+      progress: 1,
+    });
+    const done = await callBoxera('POST', `/uploads/${encodeURIComponent(sessionId)}/complete`, {
+      parts: [],
+    });
+    task.fileId = done.id || done.file_id || session.file_id || task.fileId;
     task.parts = new Map();
   } else if (String(session.upload_protocol || 's3-multipart') === 'tus-edge') {
     await runTus(task, session, partSize, report);
@@ -509,73 +694,8 @@ async function runImport(task, report) {
     });
     task.fileId = done.id || done.file_id || task.fileId;
   }
-
-  if (!task.fileId) throw new ImportError('Boxera did not return a file id.');
-
-  if (task.kind === 'drive') {
-    report({
-      state: 'ready',
-      fileId: task.fileId,
-      uploadedBytes: task.size,
-      progress: 1,
-      detail: 'فایل در فولدر Drive آماده شد',
-    });
-    return { state: 'ready', m3u8Url: null };
-  }
-
-  report({
-    state: 'registering',
-    uploadedBytes: task.size,
-    progress: 1,
-    detail: 'ثبت ویدیو در Boxera',
-  });
-  const video = await callBoxera('POST', '/video/videos', {
-    media_file_id: task.fileId,
-    title: task.title || task.name,
-    upload_request_id: `video-${task.id}`,
-    visibility: 'unlisted',
-    access_type: 'free',
-    ...(task.channelId ? { channel_id: Number(task.channelId) } : {}),
-  });
-  const videoId = video.video?.id || video.video_id || video.id;
-  if (!videoId) throw new ImportError('Boxera did not return a video id.');
-  report({
-    state: 'processing',
-    videoId: String(videoId),
-    detail: 'در انتظار تبدیل ویدیو',
-  });
-
-  const deadline = Date.now() + Math.max(0, Number(task.waitSeconds || 0)) * 1000;
-  for (;;) {
-    const info = await callBoxera(
-      'GET',
-      `/video/videos/${encodeURIComponent(String(videoId))}/processing`,
-    );
-    const playback = info.playback || {};
-    const shareUrl = playback.share_url || playback.m3u8_url || info.m3u8_url || null;
-    const percent = info.transcode?.progress?.percent ?? null;
-    report({
-      state: info.state || 'processing',
-      m3u8Url: shareUrl,
-      previewUrl: playback.url || playback.preview_url || info.preview_url || null,
-      detail:
-        info.state === 'ready'
-          ? 'آماده پخش'
-          : `در حال پردازش${percent == null ? '' : ` ${percent}%`}`,
-    });
-    if (
-      info.state === 'ready' ||
-      info.state === 'failed' ||
-      info.state === 'unavailable'
-    ) {
-      return { state: info.state, m3u8Url: shareUrl };
-    }
-    if (Date.now() > deadline) return { state: 'pending', m3u8Url: shareUrl };
-    const rawPoll = Number(info.poll_after_seconds);
-    const waitSeconds = Number.isFinite(rawPoll) && rawPoll >= 0 ? rawPoll : 5;
-    await new Promise((done) => setTimeout(done, waitSeconds * 1000));
-  }
 }
+
 
 function uploadedBytesOf(task, partSize) {
   let bytes = 0;
@@ -616,7 +736,7 @@ async function runTus(task, session, partSize, report) {
     });
     await response.text().catch(() => '');
     if (!response.ok) {
-      throw new ImportError(`TUS rejected the chunk (${response.status}).`);
+      throw new ImportError(`TUS rejected the chunk (${response.status}).`, response.status);
     }
     offset = Number(response.headers.get('upload-offset')) || offset + length;
     report({
@@ -796,6 +916,12 @@ function startServer() {
 
 async function main() {
   const [mode, ...rest] = process.argv.slice(2);
+  try {
+    assertPartSize();
+  } catch (error) {
+    console.error(String(error?.message || error));
+    process.exit(2);
+  }
   const args = parseArgs(rest);
   if (mode === 'serve') {
     if (args.port) process.env.IMPORT_PORT = String(args.port);
@@ -850,4 +976,9 @@ async function main() {
   }
 }
 
-await main();
+const isMain =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) await main();
+
+export { suggestPartSize, assertPartSize, MIN_PART_SIZE, MAX_PART_SIZE, MAX_PARTS };
