@@ -563,7 +563,13 @@ async function runImport(task, report) {
 // Boxera rejects a video upload whose mime_type does not begin with video/, so
 // a link served as application/octet-stream is named after its container.
 function videoMimeFor(name, mimeType) {
-  if (String(mimeType || '').startsWith('video/')) return mimeType;
+  const declared = String(mimeType || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  if (declared.startsWith('video/') && declared.length > 'video/'.length) {
+    return declared;
+  }
   const extension = String(name || '').split('.').pop()?.toLowerCase() || '';
   const byExtension = {
     mkv: 'video/x-matroska',
@@ -591,8 +597,9 @@ async function runSession(task, meta, report) {
   const initBody = {
     space: task.kind === 'drive' ? 'drive' : 'video',
     original_name: String(meta.name).slice(0, 255),
-    mime_type:
+    mime_type: String(
       task.kind === 'drive' ? meta.mimeType : videoMimeFor(meta.name, meta.mimeType),
+    ).slice(0, 255),
     size_bytes: meta.size,
     upload_request_id: task.requestId,
     part_size: suggestPartSize(meta.size),

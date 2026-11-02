@@ -272,7 +272,11 @@ String videoMimeType(String name) {
 /// answering `application/octet-stream` for a clip still uploads it.
 String videoMimeTypeFor(String name, String declared) {
   final type = declared.split(';').first.trim().toLowerCase();
-  if (type.startsWith('video/') && type.length > 'video/'.length) return type;
+  if (type.startsWith('video/') &&
+      type.length > 'video/'.length &&
+      type.length <= 255) {
+    return type;
+  }
   return videoMimeType(name);
 }
 
@@ -322,7 +326,7 @@ Map<String, dynamic> videoRegisterBody({
   String visibility = 'unlisted',
 }) => {
   'media_file_id': managementId(mediaFileId),
-  'title': clipText(title, 255),
+  'title': title,
   'upload_request_id': clipText(requestId, 120),
   'visibility': visibility,
   'access_type': 'free',
