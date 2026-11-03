@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'boxera_api.dart';
 import 'connection_diagnostics_page.dart';
 import 'import_service.dart';
+import 'relay_upload_page.dart';
 import 'upload_manager.dart';
 
 void main() => runApp(const FilmcaseUploaderApp());
@@ -1125,6 +1126,7 @@ class _HomePageState extends State<HomePage> {
     final pages = [
       _dashboard(),
       _linksPage(),
+      const RelayUploadPage(),
       _uploadPage(),
       _historyPage(),
       ConnectionDiagnosticsPage(apiBase: apiBase, token: token),
@@ -1167,9 +1169,14 @@ class _HomePageState extends State<HomePage> {
             ),
             NavigationDestination(icon: Icon(Icons.link), label: 'لینک‌ها'),
             NavigationDestination(
+              icon: Icon(Icons.cloud_upload_outlined),
+              selectedIcon: Icon(Icons.cloud_upload),
+              label: 'آپلود سرور',
+            ),
+            NavigationDestination(
               icon: Icon(Icons.video_library_outlined),
               selectedIcon: Icon(Icons.video_library),
-              label: 'آپلود',
+              label: 'آپلود محلی',
             ),
             NavigationDestination(icon: Icon(Icons.history), label: 'تاریخچه'),
             NavigationDestination(
